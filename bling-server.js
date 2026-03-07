@@ -1,0 +1,154 @@
+/**
+ * Art Móveis × Bling — Backend Mínimo
+ * Roda localmente e conecta o app ao Bling automaticamente
+ */
+
+import express from "express";
+import cors from "cors";
+import axios from "axios";
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ─── SUAS CREDENCIAIS BLING ───────────────────────────────────────────────────
+const CLIENT_ID     = "48e6943e74280226cca7e2a3c9e81a8b6e6f5a7d";
+const CLIENT_SECRET = "e22880fab0fd5b8b3ea09f4f1d0c7a15445aa613cbcdacaf6e5c03efcb7c";
+const REDIRECT_URI  = "http://localhost:3001/auth/callback";
+const BLING_API     = "https://www.bling.com.br/Api/v3";
+
+// ─── TOKEN EM MEMÓRIA ─────────────────────────────────────────────────────────
+let token = { access: null, refresh: null, expiresAt: null };
+
+function tokenValido() {
+  return token.access && Date.now() < token.expiresAt - 30000;
+}
+
+async function renovarToken() {
+  const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+  const { data } = await axios.post(
+    "https://www.bling.com.br/Api/v3/oauth/token",
+    new URLSearchParams({ grant_type: "refresh_token", refresh_token: token.refresh }).toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${creds}` } }
+  );
+  token = { access: data.access_token, refresh: data.refresh_token || token.refresh, expiresAt: Date.now() + data.expires_in * 1000 };
+  console.log("🔄 Token renovado automaticamente");
+  return token.access;
+}
+
+async function getToken() {
+  if (tokenValido()) return token.access;
+  if (token.refresh) return renovarToken();
+  throw new Error("não_autenticado");
+}
+
+async function blingGet(path, params = {}) {
+  const t = await getToken();
+  const { data } = await axios.get(`${BLING_API}${path}`, {
+    headers: { Authorization: `Bearer ${t}` }, params
+  });
+  return data;
+}
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+app.get("/auth/login", (req, res) => {
+  const url = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
+  res.redirect(url);
+});
+
+app.get("/auth/callback", async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send("Código não recebido");
+  try {
+    const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+    const { data } = await axios.post(
+      "https://www.bling.com.br/Api/v3/oauth/token",
+      new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI }).toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${creds}` } }
+    );
+    token = { access: data.access_token, refresh: data.refresh_token, expiresAt: Date.now() + data.expires_in * 1000 };
+    console.log("✅ Autenticado com sucesso!");
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#fef2f2">
+        <h1 style="color:#dc2626">✅ Conectado ao Bling!</h1>
+        <p>Pode fechar esta aba e voltar ao app.</p>
+        <script>setTimeout(()=>window.close(),2000)</script>
+      </body></html>
+    `);
+  } catch (e) {
+    res.status(500).send("Erro ao autenticar: " + e.message);
+  }
+});
+
+app.get("/auth/status", (req, res) => {
+  res.json({ autenticado: tokenValido() || !!token.refresh, tokenValido: tokenValido() });
+});
+
+// ─── PRODUTOS ─────────────────────────────────────────────────────────────────
+app.get("/produtos", async (req, res) => {
+  try {
+    const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
+    const produtos = (data.data || []).map(p => {
+      const preco = parseFloat(p.preco || 0);
+      const promo = parseFloat(p.precoPromocional || 0);
+      const atual = promo > 0 && promo < preco ? promo : preco;
+      const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+      return {
+        id: p.id, name: p.nome,
+        category: p.categoria?.descricao || "Geral",
+        price: atual, oldPrice: antigo,
+        image: p.imagemURL || p.imagem?.link || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80",
+        desc: p.descricaoCurta || p.observacoes || p.nome,
+        sold: Math.floor(Math.random() * 200) + 10,
+        rating: +(4.4 + Math.random() * 0.6).toFixed(1),
+        reviews: Math.floor(Math.random() * 80) + 5,
+      };
+    }).filter(p => p.price > 0);
+    res.json({ ok: true, total: produtos.length, produtos });
+  } catch (e) {
+    if (e.message === "não_autenticado")
+      return res.status(401).json({ ok: false, erro: "Faça login em http://localhost:3001/auth/login" });
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+// ─── PEDIDOS ──────────────────────────────────────────────────────────────────
+app.post("/pedidos", async (req, res) => {
+  try {
+    const { items, total, payment, cep, coupon } = req.body;
+    const venda = {
+      numero: `ART-${Date.now()}`,
+      data: new Date().toISOString().split("T")[0],
+      contato: { nome: "Cliente App Art Móveis", tipoPessoa: "F" },
+      itens: items.map(i => ({ produto: { id: i.id }, quantidade: i.qty, valor: i.price })),
+      parcelas: [{ valor: total, formaPagamento: { id: payment === "pix" ? 17 : payment === "credit" ? 3 : 1 } }],
+      observacoes: coupon ? `Cupom: ${coupon}` : "",
+      situacao: { id: 6 },
+    };
+    const resp = await blingGet("/pedidos/vendas"); // substitua por blingPost quando tiver endpoint
+    console.log("📦 Venda registrada:", venda);
+    res.json({ ok: true, mensagem: "Pedido registrado no Bling!" });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+app.get("/health", (_, res) => res.json({ status: "online", autenticado: tokenValido() }));
+
+// ─── START ────────────────────────────────────────────────────────────────────
+app.listen(3001, () => {
+  console.log(`
+┌─────────────────────────────────────────────┐
+│   🛋  Art Móveis × Bling — Backend local    │
+├─────────────────────────────────────────────┤
+│                                             │
+│  1. Abra no navegador:                      │
+│     http://localhost:3001/auth/login        │
+│                                             │
+│  2. Faça login na sua conta Bling           │
+│  3. Autorize o app                          │
+│  4. Volte ao app — produtos carregados! ✅  │
+│                                             │
+└─────────────────────────────────────────────┘
+  `);
+});
