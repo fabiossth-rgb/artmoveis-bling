@@ -107,7 +107,7 @@ app.get("/produtos", async (req, res) => {
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
     if (e.message === "não_autenticado")
-      return res.status(401).json({ ok: false, erro: "Faça login em http://localhost:3001/auth/login" });
+      return res.status(401).json({ ok: false, erro: "Faça login em https://artmoveis-bling-1.onrender.com/auth/login" });
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
@@ -138,17 +138,17 @@ app.get("/health", (_, res) => res.json({ status: "online", autenticado: tokenVa
 // ─── START ────────────────────────────────────────────────────────────────────
 app.listen(3001, () => {
   console.log(`
-┌─────────────────────────────────────────────┐
-│   🛋  Art Móveis × Bling — Backend local    │
-├─────────────────────────────────────────────┤
-│                                             │
-│  1. Abra no navegador:                      │
-│     http://localhost:3001/auth/login        │
-│                                             │
-│  2. Faça login na sua conta Bling           │
-│  3. Autorize o app                          │
-│  4. Volte ao app — produtos carregados! ✅  │
-│                                             │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│   🛋  Art Móveis × Bling — Rodando no Render                 │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  1. Abra no navegador:                                       │
+│     https://artmoveis-bling-1.onrender.com/auth/login        │
+│                                                              │
+│  2. Faça login na sua conta Bling                            │
+│  3. Autorize o app                                           │
+│  4. Volte ao app — produtos carregados! ✅                   │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
   `);
 });
