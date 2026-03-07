@@ -14,7 +14,7 @@ app.use(express.json());
 // ─── SUAS CREDENCIAIS BLING ───────────────────────────────────────────────────
 const CLIENT_ID     = "48e6943e74280226cca7e2a3c9e81a8b6e6f5a7d";
 const CLIENT_SECRET = "e22880fab0fd5b8b3ea09f4f1d0c7a15445aa613cbcdacaf6e5c03efcb7c";
-const REDIRECT_URI  = "http://localhost:3001/auth/callback";
+const REDIRECT_URI = "https://artmoveis-bling-1.onrender.com/auth/callback";
 const BLING_API     = "https://www.bling.com.br/Api/v3";
 
 // ─── TOKEN EM MEMÓRIA ─────────────────────────────────────────────────────────
