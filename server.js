@@ -99,7 +99,7 @@ app.get("/produtos", async (req, res) => {
         id: p.id, name: p.nome,
         category: p.categoria?.descricao || "Geral",
         price: atual, oldPrice: antigo,
-        image: p.imagemURL || p.imagem?.link || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80",
+        image: (p.imagemURL || p.imagem?.link || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80").replace("/t/", "/p/"),
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
         rating: +(4.4 + Math.random() * 0.6).toFixed(1),
