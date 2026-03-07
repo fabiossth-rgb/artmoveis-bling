@@ -3,7 +3,7 @@
  * Roda localmente e conecta o aplicativo ao Bling automaticamente
  */
 
-import express de "express";
+import express from "express";
 importar cors de "cors";
 import axios from "axios";
 
