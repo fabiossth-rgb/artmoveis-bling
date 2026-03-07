@@ -89,6 +89,7 @@ app.get("/auth/status", (req, res) => {
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
+    res.set("Cache-Control", "no-store");
     const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
     const produtos = (data.data || []).map(p => {
       const preco = parseFloat(p.preco || 0);
@@ -99,7 +100,7 @@ app.get("/produtos", async (req, res) => {
         id: p.id, name: p.nome,
         category: p.categoria?.descricao || "Geral",
         price: atual, oldPrice: antigo,
-        image: (p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.[0]?.link || p.imagens?.[0]?.url || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80").replace("/t/", "/p/"),
+        image: (p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.[0]?.link || p.imagens?.[0]?.url || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80"),
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
         rating: +(4.4 + Math.random() * 0.6).toFixed(1),
