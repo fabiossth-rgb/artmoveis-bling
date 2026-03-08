@@ -149,11 +149,16 @@ app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
 
-    const [cats, data] = await Promise.all([
-      getCategorias(),
-      blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" })
-    ]);
+    // Busca categorias PRIMEIRO, sempre fresh
+    const catData = await blingGet("/categorias/produtos", { limite: 100, pagina: 1 });
+    const cats = {};
+    for (const c of (catData.data || [])) {
+      if (c.id) cats[c.id] = c.descricao || c.nome || "Geral";
+    }
+    console.log("Cats:", Object.keys(cats).length, cats);
 
+    // Depois busca produtos
+    const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
     const lista = data.data || [];
 
     // Busca detalhes em lotes de 5
@@ -168,12 +173,12 @@ app.get("/produtos", async (req, res) => {
     }
 
     const produtos = detalhes.map(p => {
-      const preco  = parseFloat(p.preco || 0);
-      const promo  = parseFloat(p.precoPromocional || 0);
-      const atual  = promo > 0 && promo < preco ? promo : preco;
-      const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
-      const catId  = p.categoria?.id;
-      const catNome = catId ? (cats[catId] || "Geral") : "Geral";
+      const preco   = parseFloat(p.preco || 0);
+      const promo   = parseFloat(p.precoPromocional || 0);
+      const atual   = promo > 0 && promo < preco ? promo : preco;
+      const antigo  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+      const catId   = p.categoria?.id;
+      const catNome = catId && cats[catId] ? cats[catId] : "Geral";
       return {
         id: p.id,
         name: p.nome,
