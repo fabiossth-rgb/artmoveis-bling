@@ -157,9 +157,18 @@ app.get("/produtos", async (req, res) => {
     }
     console.log("Cats:", Object.keys(cats).length, cats);
 
-    // Depois busca produtos
-    const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
-    const lista = data.data || [];
+    // Depois busca produtos — todas as páginas
+    const lista = [];
+    let pagina = 1;
+    while (true) {
+      const data = await blingGet("/produtos", { limite: 100, pagina, situacao: "A" });
+      const lote = data.data || [];
+      lista.push(...lote);
+      console.log(`Página ${pagina}: ${lote.length} produtos (total acumulado: ${lista.length})`);
+      if (lote.length < 100) break; // última página
+      pagina++;
+      await new Promise(r => setTimeout(r, 300)); // respeita rate limit
+    }
 
     // Busca detalhes em lotes de 5
     const detalhes = [];
@@ -177,8 +186,13 @@ app.get("/produtos", async (req, res) => {
       const promo   = parseFloat(p.precoPromocional || 0);
       const atual   = promo > 0 && promo < preco ? promo : preco;
       const antigo  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+      // categoria pode vir como string direta ou como objeto { id, descricao }
       const catId   = p.categoria?.id;
-      const catNome = catId && cats[catId] ? cats[catId] : "Geral";
+      const catNome = catId && cats[catId]
+        ? cats[catId]
+        : (typeof p.categoria === "string" && p.categoria)
+          ? p.categoria
+          : (p.categoria?.descricao || p.categoria?.nome || "Geral");
       return {
         id: p.id,
         name: p.nome,
