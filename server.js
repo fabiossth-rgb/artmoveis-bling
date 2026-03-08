@@ -86,6 +86,14 @@ app.get("/auth/status", (req, res) => {
   res.json({ autenticado: tokenValido() || !!token.refresh, tokenValido: tokenValido() });
 });
 
+app.get("/debug/produto", async (req, res) => {
+  try {
+    const data = await blingGet("/produtos", { limite: 1, pagina: 1, situacao: "A" });
+    const raw = data.data?.[0] || {};
+    res.json({ categoria: raw.categoria, nome: raw.nome, id: raw.id });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
@@ -98,7 +106,7 @@ app.get("/produtos", async (req, res) => {
       const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
       return {
         id: p.id, name: p.nome,
-        category: p.categoria?.descricao || "Geral",
+        category: p.categoria?.nome || p.categoria?.descricao || "Geral",
         price: atual, oldPrice: antigo,
         image: (p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.[0]?.link || p.imagens?.[0]?.url || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80"),
         desc: p.descricaoCurta || p.observacoes || p.nome,
