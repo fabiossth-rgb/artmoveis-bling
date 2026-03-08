@@ -59,7 +59,7 @@ async function getCategorias() {
     const lista = data.data || [];
     categoriaCache = {};
     for (const c of lista) {
-      if (c.id) categoriaCache[c.id] = c.nome || c.descricao || "Geral";
+      if (c.id) categoriaCache[c.id] = c.descricao || c.nome || "Geral";
     }
     console.log(`${lista.length} categorias carregadas:`, categoriaCache);
   } catch(e) { console.warn("Erro ao buscar categorias:", e.message); }
