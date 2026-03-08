@@ -116,10 +116,25 @@ app.get("/debug/produto", async (req, res) => {
 
 app.get("/debug/categorias", async (req, res) => {
   try {
-    categoriaCache = {}; // limpa cache para recarregar
+    categoriaCache = {};
     const cats = await getCategorias();
     res.json({ total: Object.keys(cats).length, categorias: cats });
   } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get("/debug/cats1", async (req, res) => {
+  try { const d = await blingGet("/categorias/produtos", { limite: 100 }); res.json(d); }
+  catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get("/debug/cats2", async (req, res) => {
+  try { const d = await blingGet("/produtos/categorias", { limite: 100 }); res.json(d); }
+  catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get("/debug/cats3", async (req, res) => {
+  try { const d = await blingGet("/categorias", { limite: 100 }); res.json(d); }
+  catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
