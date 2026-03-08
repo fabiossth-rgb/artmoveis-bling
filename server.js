@@ -57,10 +57,11 @@ async function getCategorias() {
   try {
     const data = await blingGet("/categorias/produtos", { limite: 100, pagina: 1 });
     const lista = data.data || [];
-    categoriaCache = {};
+    const novoCache = {};
     for (const c of lista) {
-      if (c.id) categoriaCache[c.id] = c.descricao || c.nome || "Geral";
+      if (c.id) novoCache[c.id] = c.descricao || c.nome || "Geral";
     }
+    if (Object.keys(novoCache).length > 0) categoriaCache = novoCache;
     console.log(`${lista.length} categorias carregadas:`, categoriaCache);
   } catch(e) { console.warn("Erro ao buscar categorias:", e.message); }
   return categoriaCache;
@@ -116,9 +117,15 @@ app.get("/debug/produto", async (req, res) => {
 
 app.get("/debug/categorias", async (req, res) => {
   try {
-    categoriaCache = {};
-    const cats = await getCategorias();
-    res.json({ total: Object.keys(cats).length, categorias: cats });
+    categoriaCache = {}; // força recarregar
+    const data = await blingGet("/categorias/produtos", { limite: 100, pagina: 1 });
+    const lista = data.data || [];
+    const mapa = {};
+    for (const c of lista) {
+      if (c.id) mapa[c.id] = c.descricao || c.nome || "Geral";
+    }
+    categoriaCache = mapa;
+    res.json({ total: lista.length, categorias: mapa, raw: lista });
   } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
