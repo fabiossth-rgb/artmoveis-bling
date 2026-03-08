@@ -149,13 +149,13 @@ app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
 
-    // Busca categorias PRIMEIRO, sempre fresh
-    const catData = await blingGet("/categorias/produtos", { limite: 100, pagina: 1 });
+    // Busca categorias PRIMEIRO, sempre fresh (sem pagina - Bling retorna tudo de uma vez)
+    const catData = await blingGet("/categorias/produtos", { limite: 100 });
     const cats = {};
     for (const c of (catData.data || [])) {
-      if (c.id) cats[c.id] = c.descricao || c.nome || "Geral";
+      if (c.id) cats[String(c.id)] = c.descricao || c.nome || "Geral";
     }
-    console.log("Cats:", Object.keys(cats).length, cats);
+    console.log("Cats carregadas:", Object.keys(cats).length, cats);
 
     // Depois busca produtos — todas as páginas
     const lista = [];
@@ -164,10 +164,10 @@ app.get("/produtos", async (req, res) => {
       const data = await blingGet("/produtos", { limite: 100, pagina, situacao: "A" });
       const lote = data.data || [];
       lista.push(...lote);
-      console.log(`Página ${pagina}: ${lote.length} produtos (total acumulado: ${lista.length})`);
-      if (lote.length < 100) break; // última página
+      console.log(`Página ${pagina}: ${lote.length} produtos (total: ${lista.length})`);
+      if (lote.length < 100) break;
       pagina++;
-      await new Promise(r => setTimeout(r, 300)); // respeita rate limit
+      await new Promise(r => setTimeout(r, 300));
     }
 
     // Busca detalhes em lotes de 5
@@ -186,13 +186,11 @@ app.get("/produtos", async (req, res) => {
       const promo   = parseFloat(p.precoPromocional || 0);
       const atual   = promo > 0 && promo < preco ? promo : preco;
       const antigo  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
-      // categoria pode vir como string direta ou como objeto { id, descricao }
       const catId   = p.categoria?.id;
-      const catNome = catId && cats[catId]
-        ? cats[catId]
-        : (typeof p.categoria === "string" && p.categoria)
-          ? p.categoria
-          : (p.categoria?.descricao || p.categoria?.nome || "Geral");
+      const catNome = catId && cats[String(catId)]
+        ? cats[String(catId)]
+        : (p.categoria?.descricao || p.categoria?.nome || "Geral");
+      console.log(`Produto ${p.id} | catId: ${catId} | resolveu: ${catNome}`);
       return {
         id: p.id,
         name: p.nome,
