@@ -12,13 +12,11 @@ app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders:
 app.options("*", cors());
 app.use(express.json());
 
-// ─── SUAS CREDENCIAIS BLING ───────────────────────────────────────────────────
 const CLIENT_ID     = "ff08094e504660c39b73e49a2741483bc7134593";
 const CLIENT_SECRET = "3fc67babe8b58937aca774428c495843423edbe1dfbb2b03d6aa027911df";
 const REDIRECT_URI  = "https://artmoveis-bling-1.onrender.com/auth/callback";
 const BLING_API     = "https://www.bling.com.br/Api/v3";
 
-// ─── TOKEN EM MEMÓRIA ─────────────────────────────────────────────────────────
 let token = { access: null, refresh: null, expiresAt: null };
 
 function tokenValido() {
@@ -33,14 +31,14 @@ async function renovarToken() {
     { headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${creds}` } }
   );
   token = { access: data.access_token, refresh: data.refresh_token || token.refresh, expiresAt: Date.now() + data.expires_in * 1000 };
-  console.log("🔄 Token renovado automaticamente");
+  console.log("Token renovado automaticamente");
   return token.access;
 }
 
 async function getToken() {
   if (tokenValido()) return token.access;
   if (token.refresh) return renovarToken();
-  throw new Error("não_autenticado");
+  throw new Error("nao_autenticado");
 }
 
 async function blingGet(path, params = {}) {
@@ -49,6 +47,23 @@ async function blingGet(path, params = {}) {
     headers: { Authorization: `Bearer ${t}` }, params
   });
   return data;
+}
+
+// ─── CACHE DE CATEGORIAS ──────────────────────────────────────────────────────
+let categoriaCache = {};
+
+async function getCategorias() {
+  if (Object.keys(categoriaCache).length > 0) return categoriaCache;
+  try {
+    const data = await blingGet("/categorias/produtos", { limite: 100, pagina: 1 });
+    const lista = data.data || [];
+    categoriaCache = {};
+    for (const c of lista) {
+      if (c.id) categoriaCache[c.id] = c.nome || c.descricao || "Geral";
+    }
+    console.log(`${lista.length} categorias carregadas:`, categoriaCache);
+  } catch(e) { console.warn("Erro ao buscar categorias:", e.message); }
+  return categoriaCache;
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -60,7 +75,7 @@ app.get("/auth/login", (req, res) => {
 
 app.get("/auth/callback", async (req, res) => {
   const { code } = req.query;
-  if (!code) return res.status(400).send("Código não recebido");
+  if (!code) return res.status(400).send("Codigo nao recebido");
   try {
     const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
     const { data } = await axios.post(
@@ -69,10 +84,12 @@ app.get("/auth/callback", async (req, res) => {
       { headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${creds}` } }
     );
     token = { access: data.access_token, refresh: data.refresh_token, expiresAt: Date.now() + data.expires_in * 1000 };
-    console.log("✅ Autenticado com sucesso!");
+    console.log("Autenticado com sucesso!");
+    // pre-carrega categorias
+    getCategorias();
     res.send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#fef2f2">
-        <h1 style="color:#dc2626">✅ Conectado ao Bling!</h1>
+        <h1 style="color:#dc2626">Conectado ao Bling!</h1>
         <p>Pode fechar esta aba e voltar ao app.</p>
         <script>setTimeout(()=>window.close(),2000)</script>
       </body></html>
@@ -86,6 +103,7 @@ app.get("/auth/status", (req, res) => {
   res.json({ autenticado: tokenValido() || !!token.refresh, tokenValido: tokenValido() });
 });
 
+// ─── DEBUG ────────────────────────────────────────────────────────────────────
 app.get("/debug/produto", async (req, res) => {
   try {
     const lista = await blingGet("/produtos", { limite: 1, pagina: 1, situacao: "A" });
@@ -96,14 +114,27 @@ app.get("/debug/produto", async (req, res) => {
   } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
+app.get("/debug/categorias", async (req, res) => {
+  try {
+    categoriaCache = {}; // limpa cache para recarregar
+    const cats = await getCategorias();
+    res.json({ total: Object.keys(cats).length, categorias: cats });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
-    const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
+
+    const [cats, data] = await Promise.all([
+      getCategorias(),
+      blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" })
+    ]);
+
     const lista = data.data || [];
 
-    // Busca detalhes em paralelo (lotes de 5 para não estourar rate limit)
+    // Busca detalhes em lotes de 5
     const detalhes = [];
     for (let i = 0; i < lista.length; i += 5) {
       const lote = lista.slice(i, i + 5);
@@ -115,14 +146,18 @@ app.get("/produtos", async (req, res) => {
     }
 
     const produtos = detalhes.map(p => {
-      const preco = parseFloat(p.preco || 0);
-      const promo = parseFloat(p.precoPromocional || 0);
-      const atual = promo > 0 && promo < preco ? promo : preco;
+      const preco  = parseFloat(p.preco || 0);
+      const promo  = parseFloat(p.precoPromocional || 0);
+      const atual  = promo > 0 && promo < preco ? promo : preco;
       const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+      const catId  = p.categoria?.id;
+      const catNome = catId ? (cats[catId] || "Geral") : "Geral";
       return {
-        id: p.id, name: p.nome,
-        category: p.categoria?.nome || p.categoria?.descricao || "Geral",
-        price: atual, oldPrice: antigo,
+        id: p.id,
+        name: p.nome,
+        category: catNome,
+        price: atual,
+        oldPrice: antigo,
         image: (p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.[0]?.link || p.imagens?.[0]?.url || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80"),
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
@@ -133,8 +168,8 @@ app.get("/produtos", async (req, res) => {
 
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
-    if (e.message === "não_autenticado")
-      return res.status(401).json({ ok: false, erro: "Faça login em https://artmoveis-bling-1.onrender.com/auth/login" });
+    if (e.message === "nao_autenticado")
+      return res.status(401).json({ ok: false, erro: "Faca login em https://artmoveis-bling-1.onrender.com/auth/login" });
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
@@ -146,14 +181,13 @@ app.post("/pedidos", async (req, res) => {
     const venda = {
       numero: `ART-${Date.now()}`,
       data: new Date().toISOString().split("T")[0],
-      contato: { nome: "Cliente App Art Móveis", tipoPessoa: "F" },
+      contato: { nome: "Cliente App Art Moveis", tipoPessoa: "F" },
       itens: items.map(i => ({ produto: { id: i.id }, quantidade: i.qty, valor: i.price })),
       parcelas: [{ valor: total, formaPagamento: { id: payment === "pix" ? 17 : payment === "credit" ? 3 : 1 } }],
       observacoes: coupon ? `Cupom: ${coupon}` : "",
       situacao: { id: 6 },
     };
-    const resp = await blingGet("/pedidos/vendas"); // substitua por blingPost quando tiver endpoint
-    console.log("📦 Venda registrada:", venda);
+    console.log("Venda registrada:", venda);
     res.json({ ok: true, mensagem: "Pedido registrado no Bling!" });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
@@ -162,17 +196,8 @@ app.post("/pedidos", async (req, res) => {
 
 app.get("/health", (_, res) => res.json({ status: "online", autenticado: tokenValido() }));
 
-// ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`
-┌──────────────────────────────────────────────────────────────┐
-│   🛋  Art Móveis × Bling — Rodando no Render                 │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Acesse para autenticar:                                     │
-│  https://artmoveis-bling-1.onrender.com/auth/login           │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-  `);
+  console.log(`Art Moveis x Bling rodando na porta ${PORT}`);
+  console.log(`Auth: https://artmoveis-bling-1.onrender.com/auth/login`);
 });
