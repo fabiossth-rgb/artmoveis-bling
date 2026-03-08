@@ -196,7 +196,11 @@ app.get("/produtos", async (req, res) => {
         category: catNome,
         price: atual,
         oldPrice: antigo,
-        image: (p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagens?.[0]?.link || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80"),
+        image: (()=>{
+          const img = p.imagemURL || p.imagem?.link || p.imagem?.url || p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagens?.[0]?.link || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
+          console.log(`IMG ${p.id}: imagemURL=${!!p.imagemURL} imagem.link=${!!p.imagem?.link} internas=${!!p.imagens?.internas?.[0]?.link} => ${img.substring(0,80)}`);
+          return img;
+        })(),
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
         rating: +(4.4 + Math.random() * 0.6).toFixed(1),
