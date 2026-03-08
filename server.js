@@ -175,7 +175,7 @@ app.get("/produtos", async (req, res) => {
     for (let i = 0; i < lista.length; i += 5) {
       const lote = lista.slice(i, i + 5);
       const resultados = await Promise.all(
-        lote.map(p => blingGet(`/produtos/${p.id}`).then(r => r.data || r).catch(() => p))
+        lote.map(p => blingGet(`/produtos/${p.id}`).then(r => r.data || r).catch(e => { console.log(`ERRO detalhe ${p.id}:`, e.message); return p; }))
       );
       detalhes.push(...resultados);
       if (i + 5 < lista.length) await new Promise(r => setTimeout(r, 300));
@@ -197,8 +197,11 @@ app.get("/produtos", async (req, res) => {
         price: atual,
         oldPrice: antigo,
         image: (()=>{
-          const img = p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagem?.link || p.imagem?.url || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
-          console.log(`IMG ${p.id}: internas=${!!p.imagens?.internas?.[0]?.link} => ${img.substring(0,80)}`);
+          const fullImg = p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagem?.link || p.imagem?.url;
+          // imagemURL vem com /t/ (thumbnail) — remove pra pegar full
+          const fromImagemURL = p.imagemURL ? p.imagemURL.replace(/\/t\/([^?]+)/, '/$1') : null;
+          const img = fullImg || fromImagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
+          console.log(`IMG ${p.id}: internas=${!!p.imagens?.internas?.[0]?.link} imagemURL=${!!p.imagemURL} => ${img.substring(0,80)}`);
           return img;
         })(),
         desc: p.descricaoCurta || p.observacoes || p.nome,
