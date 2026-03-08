@@ -88,9 +88,11 @@ app.get("/auth/status", (req, res) => {
 
 app.get("/debug/produto", async (req, res) => {
   try {
-    const data = await blingGet("/produtos", { limite: 1, pagina: 1, situacao: "A" });
-    const raw = data.data?.[0] || {};
-    res.json({ categoria: raw.categoria, nome: raw.nome, id: raw.id });
+    const lista = await blingGet("/produtos", { limite: 1, pagina: 1, situacao: "A" });
+    const id = lista.data?.[0]?.id;
+    if (!id) return res.json({ erro: "sem produtos" });
+    const detalhe = await blingGet(`/produtos/${id}`);
+    res.json(detalhe.data || detalhe);
   } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
@@ -99,7 +101,20 @@ app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
     const data = await blingGet("/produtos", { limite: 100, pagina: 1, situacao: "A" });
-    const produtos = (data.data || []).map(p => {
+    const lista = data.data || [];
+
+    // Busca detalhes em paralelo (lotes de 5 para não estourar rate limit)
+    const detalhes = [];
+    for (let i = 0; i < lista.length; i += 5) {
+      const lote = lista.slice(i, i + 5);
+      const resultados = await Promise.all(
+        lote.map(p => blingGet(`/produtos/${p.id}`).then(r => r.data || r).catch(() => p))
+      );
+      detalhes.push(...resultados);
+      if (i + 5 < lista.length) await new Promise(r => setTimeout(r, 300));
+    }
+
+    const produtos = detalhes.map(p => {
       const preco = parseFloat(p.preco || 0);
       const promo = parseFloat(p.precoPromocional || 0);
       const atual = promo > 0 && promo < preco ? promo : preco;
@@ -115,6 +130,7 @@ app.get("/produtos", async (req, res) => {
         reviews: Math.floor(Math.random() * 80) + 5,
       };
     }).filter(p => p.price > 0);
+
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
     if (e.message === "não_autenticado")
