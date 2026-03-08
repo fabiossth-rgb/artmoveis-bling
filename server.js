@@ -149,15 +149,15 @@ app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
 
-    // Busca categorias PRIMEIRO, sempre fresh (sem pagina - Bling retorna tudo de uma vez)
+    // Busca categorias
     const catData = await blingGet("/categorias/produtos", { limite: 100 });
     const cats = {};
     for (const c of (catData.data || [])) {
       if (c.id) cats[String(c.id)] = c.descricao || c.nome || "Geral";
     }
-    console.log("Cats carregadas:", Object.keys(cats).length, cats);
+    console.log("Cats carregadas:", Object.keys(cats).length);
 
-    // Depois busca produtos — todas as páginas
+    // Busca todos os produtos (paginado) — SEM buscar detalhe individual
     const lista = [];
     let pagina = 1;
     while (true) {
@@ -170,18 +170,7 @@ app.get("/produtos", async (req, res) => {
       await new Promise(r => setTimeout(r, 300));
     }
 
-    // Busca detalhes em lotes de 5
-    const detalhes = [];
-    for (let i = 0; i < lista.length; i += 5) {
-      const lote = lista.slice(i, i + 5);
-      const resultados = await Promise.all(
-        lote.map(p => blingGet(`/produtos/${p.id}`).then(r => r.data || r).catch(e => { console.log(`ERRO detalhe ${p.id}:`, e.message); return p; }))
-      );
-      detalhes.push(...resultados);
-      if (i + 5 < lista.length) await new Promise(r => setTimeout(r, 300));
-    }
-
-    const produtos = detalhes.map(p => {
+    const produtos = lista.map(p => {
       const preco   = parseFloat(p.preco || 0);
       const promo   = parseFloat(p.precoPromocional || 0);
       const atual   = promo > 0 && promo < preco ? promo : preco;
@@ -190,20 +179,15 @@ app.get("/produtos", async (req, res) => {
       const catNome = catId && cats[String(catId)]
         ? cats[String(catId)]
         : (p.categoria?.descricao || p.categoria?.nome || "Geral");
+      // imagemURL da listagem vem como thumbnail (/t/) — usa mesmo assim como preview
+      const image = p.imagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
       return {
         id: p.id,
         name: p.nome,
         category: catNome,
         price: atual,
         oldPrice: antigo,
-        image: (()=>{
-          const fullImg = p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagem?.link || p.imagem?.url;
-          // imagemURL vem com /t/ (thumbnail) — remove pra pegar full
-          const fromImagemURL = p.imagemURL ? p.imagemURL.replace(/\/t\/([^?]+)/, '/$1') : null;
-          const img = fullImg || fromImagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
-          console.log(`IMG ${p.id}: internas=${!!p.imagens?.internas?.[0]?.link} imagemURL=${!!p.imagemURL} => ${img.substring(0,80)}`);
-          return img;
-        })(),
+        image,
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
         rating: +(4.4 + Math.random() * 0.6).toFixed(1),
@@ -215,6 +199,18 @@ app.get("/produtos", async (req, res) => {
   } catch (e) {
     if (e.message === "nao_autenticado")
       return res.status(401).json({ ok: false, erro: "Faca login em https://artmoveis-bling-1.onrender.com/auth/login" });
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+// ─── DETALHE DO PRODUTO (sob demanda) ────────────────────────────────────────
+app.get("/produtos/:id", async (req, res) => {
+  try {
+    const detalhe = await blingGet(`/produtos/${req.params.id}`);
+    const p = detalhe.data || detalhe;
+    const image = p.imagens?.internas?.[0]?.link || p.imagens?.externas?.[0]?.link || p.imagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
+    res.json({ ok: true, image, desc: p.descricaoCurta || p.observacoes || p.nome });
+  } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
