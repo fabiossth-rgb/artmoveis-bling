@@ -1,4 +1,4 @@
-/**
+**
  * Art Móveis × XML Feed — Backend
  */
 
@@ -96,6 +96,13 @@ async function carregarXML() {
     const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
     const desc      = decodeEntities(item["g:description"] || item.description || item.descricao || name);
 
+    // Imagens adicionais do feed Google Shopping
+    const addImgs = item["g:additional_image_link"];
+    const extraImages = addImgs
+      ? (Array.isArray(addImgs) ? addImgs : [addImgs]).map(String).filter(Boolean)
+      : [];
+    const images = [String(image), ...extraImages.filter(x => x !== String(image))];
+
     return {
       id: String(id),
       name,
@@ -103,6 +110,7 @@ async function carregarXML() {
       price,
       oldPrice,
       image: String(image),
+      images,
       desc: desc.replace(/<[^>]*>/g, "").slice(0, 300),
       sold: Math.floor(Math.random() * 200) + 10,
       rating: +(4.4 + Math.random() * 0.6).toFixed(1),
@@ -139,7 +147,7 @@ app.get("/produtos/:id", async (req, res) => {
     }
     const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
     if (!p) return res.status(404).json({ ok: false, erro: "Não encontrado" });
-    res.json({ ok: true, image: p.image, desc: p.desc });
+    res.json({ ok: true, image: p.image, images: p.images || [p.image], desc: p.desc });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
