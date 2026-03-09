@@ -1,4 +1,4 @@
-**
+/**
  * Art Móveis × XML Feed — Backend
  */
 
@@ -16,11 +16,13 @@ const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWY
 const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
 const UA       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+// Estratégia Visionária: Cache com tempo de vida e trava de concorrência
 let cache = { produtos: [], updatedAt: null };
+let isFetching = null; 
+const CACHE_TTL = 1000 * 60 * 60; // 1 hora de vida para o cache
 
 function parsePreco(val) {
   if (!val) return 0;
-  // formato "800.00 BRL" — remove tudo exceto números, ponto e vírgula
   const clean = String(val).replace(/[^0-9.,]/g, "").replace(",", ".").replace(/\.(?=.*\.)/g, "");
   return parseFloat(clean) || 0;
 }
@@ -28,16 +30,20 @@ function parsePreco(val) {
 function decodeEntities(str) {
   if (!str) return "";
   return String(str)
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
+// Lock: impede que o servidor faça múltiplos downloads do XML ao mesmo tempo
+async function fetchXMLWithLock() {
+  if (isFetching) return isFetching;
+  isFetching = carregarXML().finally(() => { isFetching = null; });
+  return isFetching;
+}
+
 async function carregarXML() {
-  console.log("Buscando XML...");
+  console.log("Buscando XML da Art Móveis...");
   const { data: rawBuffer } = await axios.get(XML_URL, {
     responseType: "arraybuffer",
     timeout: 30000,
@@ -48,38 +54,28 @@ async function carregarXML() {
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
   const json = parser.parse(raw);
 
-  const rootKeys = Object.keys(json);
-  console.log("Root keys:", rootKeys);
-
   let items = [];
 
-  if (json?.rss?.channel?.item) {
-    items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
-    console.log("Formato: RSS/Google Shopping,", items.length, "itens");
-  } else if (json?.feed?.entry) {
-    items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
-    console.log("Formato: Atom feed,", items.length, "itens");
-  } else if (json?.produtos?.produto) {
-    items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
-    console.log("Formato: Tray custom,", items.length, "itens");
-  } else {
-    for (const key of rootKeys) {
-      const sub = json[key];
-      if (sub && typeof sub === "object") {
-        for (const k2 of Object.keys(sub)) {
-          if (Array.isArray(sub[k2]) && sub[k2].length > 5) {
-            items = sub[k2];
-            console.log(`Formato desconhecido — usando ${key}.${k2},`, items.length, "itens");
-            break;
-          }
+  // Concatenação limpa e fallback recursivo inteligente
+  if (json?.rss?.channel?.item) items = [].concat(json.rss.channel.item);
+  else if (json?.feed?.entry) items = [].concat(json.feed.entry);
+  else if (json?.produtos?.produto) items = [].concat(json.produtos.produto);
+  else {
+    const searchArray = (obj) => {
+      for (const key in obj) {
+        if (Array.isArray(obj[key]) && obj[key].length > 5) return obj[key];
+        if (obj[key] && typeof obj[key] === "object") {
+          const res = searchArray(obj[key]);
+          if (res) return res;
         }
       }
-      if (items.length > 0) break;
-    }
+      return null;
+    };
+    items = searchArray(json) || [];
   }
 
   if (items.length === 0) {
-    console.warn("Nenhum item encontrado. Estrutura:", JSON.stringify(json).slice(0, 500));
+    console.warn("Nenhum item encontrado no XML.");
     return [];
   }
 
@@ -96,12 +92,9 @@ async function carregarXML() {
     const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
     const desc      = decodeEntities(item["g:description"] || item.description || item.descricao || name);
 
-    // Imagens adicionais do feed Google Shopping
     const addImgs = item["g:additional_image_link"];
-    const extraImages = addImgs
-      ? (Array.isArray(addImgs) ? addImgs : [addImgs]).map(String).filter(Boolean)
-      : [];
-    const images = [String(image), ...extraImages.filter(x => x !== String(image))];
+    const extraImages = addImgs ? [].concat(addImgs).map(String).filter(Boolean) : [];
+    const images = [...new Set([String(image), ...extraImages])]; // Remove duplicatas de forma elegante
 
     return {
       id: String(id),
@@ -118,23 +111,37 @@ async function carregarXML() {
     };
   }).filter(p => p.price > 0);
 
-  console.log(`XML processado: ${produtos.length} produtos com preço`);
+  console.log(`XML processado: ${produtos.length} produtos válidos.`);
   return produtos;
 }
 
 app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
-    if (cache.produtos.length > 0) {
-      console.log(`Cache hit: ${cache.produtos.length} produtos`);
+    
+    // Verifica se temos cache e se ele ainda é válido (dentro da 1 hora)
+    const isCacheValid = cache.produtos.length > 0 && cache.updatedAt && (Date.now() - cache.updatedAt.getTime() < CACHE_TTL);
+
+    if (isCacheValid) {
       return res.json({ ok: true, total: cache.produtos.length, produtos: cache.produtos });
     }
-    const produtos = await carregarXML();
-    cache.produtos = produtos;
-    cache.updatedAt = new Date();
+
+    // Se o cache expirou ou não existe, busca com a trava
+    const produtos = await fetchXMLWithLock();
+    
+    if (produtos.length > 0) {
+      cache.produtos = produtos;
+      cache.updatedAt = new Date();
+    }
+    
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
     console.error("Erro /produtos:", e.message);
+    // Se der erro na busca, mas tivermos um cache antigo, envia o antigo para não perder venda!
+    if (cache.produtos.length > 0) {
+      console.log("Servindo cache antigo (stale) devido a erro na fonte.");
+      return res.json({ ok: true, total: cache.produtos.length, produtos: cache.produtos, staled: true });
+    }
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
@@ -142,8 +149,9 @@ app.get("/produtos", async (req, res) => {
 app.get("/produtos/:id", async (req, res) => {
   try {
     if (cache.produtos.length === 0) {
-      const produtos = await carregarXML();
+      const produtos = await fetchXMLWithLock();
       cache.produtos = produtos;
+      cache.updatedAt = new Date();
     }
     const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
     if (!p) return res.status(404).json({ ok: false, erro: "Não encontrado" });
@@ -167,7 +175,7 @@ app.get("/debug/xml", async (req, res) => {
 
 app.post("/cache/refresh", (req, res) => {
   cache = { produtos: [], updatedAt: null };
-  res.json({ ok: true, msg: "Cache limpo" });
+  res.json({ ok: true, msg: "Cache limpo. Próxima requisição baixará o XML novamente." });
 });
 
 app.get("/auth/login", (_, res) => res.redirect("/health"));
@@ -176,8 +184,8 @@ app.get("/auth/status", (_, res) => res.json({ autenticado: true, tokenValido: t
 app.post("/pedidos", async (req, res) => {
   try {
     const { items, total, payment, coupon } = req.body;
-    console.log("Pedido:", { items, total, payment, coupon });
-    res.json({ ok: true, mensagem: "Pedido registrado!" });
+    console.log("Novo Pedido Art Móveis:", { items, total, payment, coupon });
+    res.json({ ok: true, mensagem: "Pedido registrado com sucesso!" });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
@@ -187,5 +195,5 @@ app.get("/health", (_, res) => res.json({ status: "online", autenticado: true, f
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Art Moveis × XML rodando na porta ${PORT}`);
+  console.log(`Art Móveis × XML rodando liso na porta ${PORT}`);
 });
