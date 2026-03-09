@@ -144,10 +144,42 @@ app.get("/debug/cats3", async (req, res) => {
   catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
+// ─── CACHE ────────────────────────────────────────────────────────────────────
+let produtoCache = { produtos: [], cats: {}, updatedAt: null, enriching: false };
+
+async function enriquecerEmBackground(lista) {
+  if (produtoCache.enriching) return;
+  produtoCache.enriching = true;
+  console.log(`Background: enriquecendo ${lista.length} produtos...`);
+  let ok = 0, erros = 0;
+  for (const p of lista) {
+    try {
+      const detalhe = await blingGet(`/produtos/${p.id}`).then(r => r.data || r);
+      const fullImg = detalhe.imagens?.internas?.[0]?.link || detalhe.imagens?.externas?.[0]?.link;
+      if (fullImg) {
+        const idx = produtoCache.produtos.findIndex(x => x.id === p.id);
+        if (idx !== -1) { produtoCache.produtos[idx].image = fullImg; ok++; }
+      }
+      await new Promise(r => setTimeout(r, 700));
+    } catch(e) {
+      erros++;
+      await new Promise(r => setTimeout(r, 2500)); // espera mais se der 429
+    }
+  }
+  produtoCache.enriching = false;
+  console.log(`Background concluído: ${ok} imagens atualizadas, ${erros} erros`);
+}
+
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
+
+    // Cache hit — retorna na hora
+    if (produtoCache.produtos.length > 0) {
+      console.log(`Cache: ${produtoCache.produtos.length} produtos (enriquecendo=${produtoCache.enriching})`);
+      return res.json({ ok: true, total: produtoCache.produtos.length, produtos: produtoCache.produtos, enriching: produtoCache.enriching });
+    }
 
     // Busca categorias
     const catData = await blingGet("/categorias/produtos", { limite: 100 });
@@ -155,9 +187,9 @@ app.get("/produtos", async (req, res) => {
     for (const c of (catData.data || [])) {
       if (c.id) cats[String(c.id)] = c.descricao || c.nome || "Geral";
     }
-    console.log("Cats carregadas:", Object.keys(cats).length);
+    console.log("Cats:", Object.keys(cats).length);
 
-    // Busca todos os produtos (paginado) — SEM buscar detalhe individual
+    // Busca todos os produtos paginado — SEM detalhe individual
     const lista = [];
     let pagina = 1;
     while (true) {
@@ -171,29 +203,26 @@ app.get("/produtos", async (req, res) => {
     }
 
     const produtos = lista.map(p => {
-      const preco   = parseFloat(p.preco || 0);
-      const promo   = parseFloat(p.precoPromocional || 0);
-      const atual   = promo > 0 && promo < preco ? promo : preco;
-      const antigo  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
-      const catId   = p.categoria?.id;
-      const catNome = catId && cats[String(catId)]
-        ? cats[String(catId)]
-        : (p.categoria?.descricao || p.categoria?.nome || "Geral");
-      // imagemURL da listagem vem como thumbnail (/t/) — usa mesmo assim como preview
-      const image = p.imagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
+      const preco  = parseFloat(p.preco || 0);
+      const promo  = parseFloat(p.precoPromocional || 0);
+      const atual  = promo > 0 && promo < preco ? promo : preco;
+      const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+      const catId  = p.categoria?.id;
+      const catNome = catId && cats[String(catId)] ? cats[String(catId)] : (p.categoria?.descricao || p.categoria?.nome || "Geral");
       return {
-        id: p.id,
-        name: p.nome,
-        category: catNome,
-        price: atual,
-        oldPrice: antigo,
-        image,
+        id: p.id, name: p.nome, category: catNome, price: atual, oldPrice: antigo,
+        image: p.imagemURL || "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80",
         desc: p.descricaoCurta || p.observacoes || p.nome,
         sold: Math.floor(Math.random() * 200) + 10,
         rating: +(4.4 + Math.random() * 0.6).toFixed(1),
         reviews: Math.floor(Math.random() * 80) + 5,
       };
     }).filter(p => p.price > 0);
+
+    // Salva cache e dispara enriquecimento em background
+    produtoCache.produtos = produtos;
+    produtoCache.updatedAt = new Date();
+    enriquecerEmBackground(lista); // não bloqueia
 
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
@@ -203,7 +232,7 @@ app.get("/produtos", async (req, res) => {
   }
 });
 
-// ─── DETALHE DO PRODUTO (sob demanda) ────────────────────────────────────────
+// ─── DETALHE SOB DEMANDA ──────────────────────────────────────────────────────
 app.get("/produtos/:id", async (req, res) => {
   try {
     const detalhe = await blingGet(`/produtos/${req.params.id}`);
@@ -213,6 +242,12 @@ app.get("/produtos/:id", async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
+});
+
+// Força refresh do cache
+app.post("/cache/refresh", (req, res) => {
+  produtoCache = { produtos: [], cats: {}, updatedAt: null, enriching: false };
+  res.json({ ok: true, msg: "Cache limpo" });
 });
 
 // ─── PEDIDOS ──────────────────────────────────────────────────────────────────
