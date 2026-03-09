@@ -1,126 +1,117 @@
 /**
- * Art Móveis × Tray — Backend
- * Usa a API pública da Tray (sem autenticação)
+ * Art Móveis × XML Feed — Backend
+ * Usa o XML público da loja como fonte de dados
  */
 
 import express from "express";
 import cors from "cors";
 import axios from "axios";
+import { XMLParser } from "fast-xml-parser";
 
 const app = express();
 app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
 app.options("*", cors());
 app.use(express.json());
 
-const TRAY_API  = "https://www.lojasartmoveis.com.br/web_api";
-const FALLBACK  = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
-
-async function trayGet(path, params = {}) {
-  const { data } = await axios.get(`${TRAY_API}${path}`, { params });
-  return data;
-}
+const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
+const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
 
 // ─── CACHE ────────────────────────────────────────────────────────────────────
-let cache = { produtos: [], cats: {}, updatedAt: null };
+let cache = { produtos: [], updatedAt: null };
 
-async function carregarCategorias() {
-  try {
-    const data = await trayGet("/categories", { limit: 100 });
-    const lista = data.Categories || [];
-    const mapa = {};
-    for (const c of lista) {
-      const cat = c.Category || c;
-      if (cat.id) mapa[String(cat.id)] = cat.name || "Geral";
-    }
-    console.log(`${Object.keys(mapa).length} categorias Tray carregadas`);
-    return mapa;
-  } catch(e) {
-    console.warn("Erro categorias:", e.message);
-    return {};
-  }
+function parsePreco(val) {
+  if (!val) return 0;
+  return parseFloat(String(val).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
 }
 
-function melhorImagem(p) {
-  try {
-    const imgs = p.ProductImage || [];
-    for (const size of ["180", "90", "30"]) {
-      for (const img of imgs) {
-        const url = img?.https?.[size] || img?.[size];
-        if (url) return url;
+async function carregarXML() {
+  console.log("Buscando XML...");
+  const { data: raw } = await axios.get(XML_URL, {
+    responseType: "text",
+    timeout: 30000,
+    headers: { "Accept": "application/xml, text/xml, */*" }
+  });
+
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+  const json = parser.parse(raw);
+
+  const rootKeys = Object.keys(json);
+  console.log("Root keys:", rootKeys);
+
+  let items = [];
+
+  if (json?.rss?.channel?.item) {
+    items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
+    console.log("Formato: RSS/Google Shopping,", items.length, "itens");
+  } else if (json?.feed?.entry) {
+    items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
+    console.log("Formato: Atom feed,", items.length, "itens");
+  } else if (json?.produtos?.produto) {
+    items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
+    console.log("Formato: Tray custom,", items.length, "itens");
+  } else {
+    for (const key of rootKeys) {
+      const sub = json[key];
+      if (sub && typeof sub === "object") {
+        for (const k2 of Object.keys(sub)) {
+          if (Array.isArray(sub[k2]) && sub[k2].length > 5) {
+            items = sub[k2];
+            console.log(`Formato desconhecido — usando ${key}.${k2},`, items.length, "itens");
+            break;
+          }
+        }
       }
+      if (items.length > 0) break;
     }
-  } catch(e) {}
-  return FALLBACK;
-}
-
-function mapearProduto(p, cats) {
-  const prod = p.Product || p;
-  const preco  = parseFloat(prod.price || 0);
-  const promo  = parseFloat(prod.promotional_price || 0);
-  const atual  = promo > 0 && promo < preco ? promo : preco;
-  const antigo = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
-  const catId  = String(prod.category_id || "");
-  const catNome = cats[catId] || "Geral";
-  const image  = melhorImagem(prod);
-
-  return {
-    id: prod.id,
-    name: prod.name,
-    category: catNome,
-    price: atual,
-    oldPrice: antigo,
-    image,
-    desc: prod.description || prod.short_description || prod.name,
-    sold: Math.floor(Math.random() * 200) + 10,
-    rating: +(4.4 + Math.random() * 0.6).toFixed(1),
-    reviews: Math.floor(Math.random() * 80) + 5,
-  };
-}
-
-async function carregarTodosProdutos(cats) {
-  const todos = [];
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const data = await trayGet("/products", {
-      limit,
-      offset,
-      available: 1,
-      sort: "id",
-      order: "asc",
-    });
-
-    const lista = data.Products || [];
-    for (const p of lista) todos.push(mapearProduto(p, cats));
-    console.log(`Tray offset ${offset}: ${lista.length} produtos (total: ${todos.length})`);
-
-    if (lista.length < limit) break;
-    offset += limit;
-    await new Promise(r => setTimeout(r, 200));
   }
 
-  return todos.filter(p => p.price > 0);
+  if (items.length === 0) {
+    console.warn("Nenhum item encontrado. Estrutura:", JSON.stringify(json).slice(0, 500));
+    return [];
+  }
+
+  const produtos = items.map((item, i) => {
+    const name      = item["g:title"] || item.title || item.nome || item.name || `Produto ${i+1}`;
+    const precoRaw  = item["g:price"] || item.price || item.preco || item["g:sale_price"] || "0";
+    const promoRaw  = item["g:sale_price"] || item.promotional_price || item.preco_promocional || "0";
+    const preco     = parsePreco(precoRaw);
+    const promo     = parsePreco(promoRaw);
+    const price     = promo > 0 && promo < preco ? promo : preco;
+    const oldPrice  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
+    const image     = item["g:image_link"] || item.image_link || item.imagem || item.image || FALLBACK;
+    const category  = item["g:product_type"] || item.product_type || item.categoria || item.category || "Geral";
+    const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
+    const desc      = item["g:description"] || item.description || item.descricao || name;
+
+    return {
+      id: String(id),
+      name: String(name),
+      category: String(category).split(">").pop().trim(),
+      price,
+      oldPrice,
+      image: String(image),
+      desc: String(desc).replace(/<[^>]*>/g, "").slice(0, 300),
+      sold: Math.floor(Math.random() * 200) + 10,
+      rating: +(4.4 + Math.random() * 0.6).toFixed(1),
+      reviews: Math.floor(Math.random() * 80) + 5,
+    };
+  }).filter(p => p.price > 0);
+
+  console.log(`XML processado: ${produtos.length} produtos com preço`);
+  return produtos;
 }
 
 // ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
-
     if (cache.produtos.length > 0) {
       console.log(`Cache hit: ${cache.produtos.length} produtos`);
       return res.json({ ok: true, total: cache.produtos.length, produtos: cache.produtos });
     }
-
-    const cats = await carregarCategorias();
-    const produtos = await carregarTodosProdutos(cats);
-
+    const produtos = await carregarXML();
     cache.produtos = produtos;
-    cache.cats = cats;
     cache.updatedAt = new Date();
-
-    console.log(`Tray: ${produtos.length} produtos carregados`);
     res.json({ ok: true, total: produtos.length, produtos });
   } catch (e) {
     console.error("Erro /produtos:", e.message);
@@ -128,32 +119,42 @@ app.get("/produtos", async (req, res) => {
   }
 });
 
-// ─── DETALHE SOB DEMANDA ──────────────────────────────────────────────────────
 app.get("/produtos/:id", async (req, res) => {
   try {
-    const data = await trayGet(`/products/${req.params.id}`);
-    const p = (data.Products?.[0]?.Product) || data.Product || data;
-    const image = melhorImagem(p);
-    res.json({ ok: true, image, desc: p.description || p.short_description || p.name });
+    if (cache.produtos.length === 0) {
+      const produtos = await carregarXML();
+      cache.produtos = produtos;
+    }
+    const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
+    if (!p) return res.status(404).json({ ok: false, erro: "Não encontrado" });
+    res.json({ ok: true, image: p.image, desc: p.desc });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
 
-// Força refresh do cache
+app.get("/debug/xml", async (req, res) => {
+  try {
+    const { data: raw } = await axios.get(XML_URL, { responseType: "text", timeout: 30000 });
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+    const json = parser.parse(raw);
+    res.json({ rootKeys: Object.keys(json), sample: JSON.stringify(json).slice(0, 3000) });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 app.post("/cache/refresh", (req, res) => {
-  cache = { produtos: [], cats: {}, updatedAt: null };
+  cache = { produtos: [], updatedAt: null };
   res.json({ ok: true, msg: "Cache limpo" });
 });
 
-// AUTH (compatibilidade com o front)
 app.get("/auth/login", (_, res) => res.redirect("/health"));
 app.get("/auth/status", (_, res) => res.json({ autenticado: true, tokenValido: true }));
 
-// ─── PEDIDOS ──────────────────────────────────────────────────────────────────
 app.post("/pedidos", async (req, res) => {
   try {
-    const { items, total, payment, cep, coupon } = req.body;
+    const { items, total, payment, coupon } = req.body;
     console.log("Pedido:", { items, total, payment, coupon });
     res.json({ ok: true, mensagem: "Pedido registrado!" });
   } catch (e) {
@@ -161,9 +162,9 @@ app.post("/pedidos", async (req, res) => {
   }
 });
 
-app.get("/health", (_, res) => res.json({ status: "online", autenticado: true, fonte: "Tray" }));
+app.get("/health", (_, res) => res.json({ status: "online", autenticado: true, fonte: "XML", cachedProducts: cache.produtos.length }));
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Art Moveis x Tray rodando na porta ${PORT}`);
+  console.log(`Art Moveis × XML rodando na porta ${PORT}`);
 });
