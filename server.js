@@ -20,7 +20,9 @@ let cache = { produtos: [], updatedAt: null };
 
 function parsePreco(val) {
   if (!val) return 0;
-  return parseFloat(String(val).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
+  // formato "800.00 BRL" — remove tudo exceto números, ponto e vírgula
+  const clean = String(val).replace(/[^0-9.,]/g, "").replace(",", ".").replace(/\.(?=.*\.)/g, "");
+  return parseFloat(clean) || 0;
 }
 
 function decodeEntities(str) {
