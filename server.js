@@ -26,12 +26,12 @@ function parsePreco(val) {
 
 async function carregarXML() {
   console.log("Buscando XML...");
-  const { data: raw } = await axios.get(XML_URL, {
-    responseType: "text",
+  const { data: rawBuffer } = await axios.get(XML_URL, {
+    responseType: "arraybuffer",
     timeout: 30000,
-    headers: { "Accept": "application/xml, text/xml, */*" }
   });
 
+  const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
   const json = parser.parse(raw);
 
