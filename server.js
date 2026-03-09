@@ -1,6 +1,5 @@
 /**
  * Art Móveis × XML Feed — Backend
- * Usa o XML público da loja como fonte de dados
  */
 
 import express from "express";
@@ -16,12 +15,22 @@ app.use(express.json());
 const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
 const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
 
-// ─── CACHE ────────────────────────────────────────────────────────────────────
 let cache = { produtos: [], updatedAt: null };
 
 function parsePreco(val) {
   if (!val) return 0;
   return parseFloat(String(val).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
+}
+
+function decodeEntities(str) {
+  if (!str) return String(str || "");
+  return String(str)
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
 async function carregarXML() {
@@ -71,7 +80,7 @@ async function carregarXML() {
   }
 
   const produtos = items.map((item, i) => {
-    const name      = item["g:title"] || item.title || item.nome || item.name || `Produto ${i+1}`;
+    const name      = decodeEntities(item["g:title"] || item.title || item.nome || item.name || `Produto ${i+1}`);
     const precoRaw  = item["g:price"] || item.price || item.preco || item["g:sale_price"] || "0";
     const promoRaw  = item["g:sale_price"] || item.promotional_price || item.preco_promocional || "0";
     const preco     = parsePreco(precoRaw);
@@ -79,18 +88,18 @@ async function carregarXML() {
     const price     = promo > 0 && promo < preco ? promo : preco;
     const oldPrice  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
     const image     = item["g:image_link"] || item.image_link || item.imagem || item.image || FALLBACK;
-    const category  = item["g:product_type"] || item.product_type || item.categoria || item.category || "Geral";
+    const category  = decodeEntities(item["g:product_type"] || item.product_type || item.categoria || item.category || "Geral");
     const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
-    const desc      = item["g:description"] || item.description || item.descricao || name;
+    const desc      = decodeEntities(item["g:description"] || item.description || item.descricao || name);
 
     return {
       id: String(id),
-      name: String(name),
-      category: String(category).split(">").pop().trim(),
+      name,
+      category: category.split(">").pop().trim(),
       price,
       oldPrice,
       image: String(image),
-      desc: String(desc).replace(/<[^>]*>/g, "").slice(0, 300),
+      desc: desc.replace(/<[^>]*>/g, "").slice(0, 300),
       sold: Math.floor(Math.random() * 200) + 10,
       rating: +(4.4 + Math.random() * 0.6).toFixed(1),
       reviews: Math.floor(Math.random() * 80) + 5,
@@ -101,7 +110,6 @@ async function carregarXML() {
   return produtos;
 }
 
-// ─── PRODUTOS ─────────────────────────────────────────────────────────────────
 app.get("/produtos", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
@@ -135,7 +143,8 @@ app.get("/produtos/:id", async (req, res) => {
 
 app.get("/debug/xml", async (req, res) => {
   try {
-    const { data: raw } = await axios.get(XML_URL, { responseType: "text", timeout: 30000 });
+    const { data: rawBuffer } = await axios.get(XML_URL, { responseType: "arraybuffer", timeout: 30000 });
+    const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
     const json = parser.parse(raw);
     res.json({ rootKeys: Object.keys(json), sample: JSON.stringify(json).slice(0, 3000) });
