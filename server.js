@@ -14,6 +14,7 @@ app.use(express.json());
 
 const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
 const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
+const UA       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 let cache = { produtos: [], updatedAt: null };
 
@@ -23,7 +24,7 @@ function parsePreco(val) {
 }
 
 function decodeEntities(str) {
-  if (!str) return String(str || "");
+  if (!str) return "";
   return String(str)
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -38,6 +39,7 @@ async function carregarXML() {
   const { data: rawBuffer } = await axios.get(XML_URL, {
     responseType: "arraybuffer",
     timeout: 30000,
+    headers: { "User-Agent": UA },
   });
 
   const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
@@ -143,7 +145,7 @@ app.get("/produtos/:id", async (req, res) => {
 
 app.get("/debug/xml", async (req, res) => {
   try {
-    const { data: rawBuffer } = await axios.get(XML_URL, { responseType: "arraybuffer", timeout: 30000 });
+    const { data: rawBuffer } = await axios.get(XML_URL, { responseType: "arraybuffer", timeout: 30000, headers: { "User-Agent": UA } });
     const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
     const json = parser.parse(raw);
