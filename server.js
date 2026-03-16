@@ -96,6 +96,7 @@ async function carregarXML() {
     const price     = promo > 0 && promo < preco ? promo : preco;
     const oldPrice  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
     const image     = item["g:image_link"] || item.image_link || item.imagem || item.image || FALLBACK;
+    const link      = item["g:link"] || item.link || item.url || "";
     const category  = decodeEntities(item["g:product_type"] || item.product_type || item.categoria || item.category || "Geral");
     const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
     const desc      = decodeEntities(item["g:description"] || item.description || item.descricao || name);
@@ -115,6 +116,7 @@ async function carregarXML() {
       oldPrice,
       image: String(image),
       images,
+      link: String(link),
       desc: desc.replace(/<[^>]*>/g, "").slice(0, 300),
       sold: Math.floor(Math.random() * 200) + 10,
       rating: +(4.4 + Math.random() * 0.6).toFixed(1),
