@@ -1,6 +1,6 @@
 /**
- * Art Móveis × XML Feed — Backend
- * Produtos via XML público da Tray + Checkout Mercado Pago
+ * Art Móveis × Backend v2
+ * Produtos via XML Tray + Checkout Mercado Pago + Pedidos no Supabase
  */
 
 import express from "express";
@@ -17,28 +17,52 @@ app.use(express.json());
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
 const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
-const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "APP_USR-4650107760827637-032712-e385940e3d8d25df9502d0ee92e5518b-1605928811";
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "";
 const MP_API = "https://api.mercadopago.com";
 const BACKEND_URL = process.env.BACKEND_URL || "https://artmoveis-bling-1.onrender.com";
 
-// ─── CACHE ────────────────────────────────────────────────────────────────────
-let cache = { produtos: [], updatedAt: null };
+// ─── SUPABASE ─────────────────────────────────────────────────────────────────
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://gujrjkwbiwxtoogrpodz.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const sbHeaders = {
+  "Content-Type": "application/json",
+  "apikey": SUPABASE_KEY,
+  "Authorization": `Bearer ${SUPABASE_KEY}`,
+  "Prefer": "return=representation",
+};
 
-// ─── PEDIDOS EM MEMÓRIA (futuramente: banco de dados) ─────────────────────────
-const pedidos = new Map();
+const sb = {
+  async insert(table, data) {
+    const { data: res } = await axios.post(`${SUPABASE_URL}/rest/v1/${table}`, data, { headers: sbHeaders });
+    return res;
+  },
+  async update(table, match, data) {
+    const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
+    const { data: res } = await axios.patch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, data, { headers: sbHeaders });
+    return res;
+  },
+  async select(table, query = "") {
+    const { data: res } = await axios.get(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers: { ...sbHeaders, "Prefer": "" } });
+    return res;
+  },
+  async upsert(table, data) {
+    const { data: res } = await axios.post(`${SUPABASE_URL}/rest/v1/${table}`, data, {
+      headers: { ...sbHeaders, "Prefer": "return=representation,resolution=merge-duplicates" },
+    });
+    return res;
+  },
+};
+
+// ─── CACHE XML ────────────────────────────────────────────────────────────────
+let cache = { produtos: [], updatedAt: null };
 
 function parsePreco(val) {
   if (!val) return 0;
   let s = String(val).replace(/[R$\sBRL]/g, "").trim();
-  // Se tem vírgula como decimal (formato BR: 1.896,00)
-  if (s.includes(",")) {
-    s = s.replace(/\./g, "").replace(",", ".");
-  }
-  // Se não tem vírgula, o ponto é decimal (formato intl: 1896.00)
+  if (s.includes(",")) { s = s.replace(/\./g, "").replace(",", "."); }
   return parseFloat(s) || 0;
 }
 
-// Decodificar HTML entities nas strings do XML
 function decodeEntities(str) {
   if (!str || typeof str !== "string") return str || "";
   let s = str
@@ -46,39 +70,28 @@ function decodeEntities(str) {
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
     .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-  // Segundo passe pra double-encoded
   s = s.replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
   return s;
 }
 
 function decodeCategory(str) {
   let s = decodeEntities(str);
-  // "Cozinhas > Kit Cozinha" → "Cozinhas"
   if (s.includes(">")) s = s.split(">")[0].trim();
   return s;
 }
 
 async function carregarXML() {
   console.log("Buscando XML...");
-  const { data: raw } = await axios.get(XML_URL, {
-    responseType: "text",
-    timeout: 30000,
-    headers: { "Accept": "application/xml, text/xml, */*" }
-  });
-
+  const { data: raw } = await axios.get(XML_URL, { responseType: "text", timeout: 30000, headers: { "Accept": "application/xml, text/xml, */*" } });
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
   const json = parser.parse(raw);
 
   let items = [];
-  if (json?.rss?.channel?.item) {
-    items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
-  } else if (json?.feed?.entry) {
-    items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
-  } else if (json?.produtos?.produto) {
-    items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
-  }
+  if (json?.rss?.channel?.item) items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
+  else if (json?.feed?.entry) items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
+  else if (json?.produtos?.produto) items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
 
-  console.log(`XML: ${items.length} itens encontrados`);
+  console.log(`XML: ${items.length} itens`);
 
   cache.produtos = items.map((item, idx) => {
     const title = decodeEntities(item["g:title"] || item.title || item.nome || `Produto ${idx}`);
@@ -90,227 +103,177 @@ async function carregarXML() {
     const desc = decodeEntities(item["g:description"] || item.description || item.descricao || "");
     const id = item["g:id"] || item.id || String(idx + 1);
     const brand = decodeEntities(item["g:brand"] || item.brand || item.marca || "Art Móveis");
-
-    // Imagens adicionais
     const addImgs = item["g:additional_image_link"];
     let images = [image];
-    if (addImgs) {
-      if (Array.isArray(addImgs)) images = [image, ...addImgs];
-      else images = [image, addImgs];
-    }
+    if (addImgs) { if (Array.isArray(addImgs)) images = [image, ...addImgs]; else images = [image, addImgs]; }
 
-    return {
-      id, name: title, price, oldPrice: oldPrice > price ? oldPrice : price * 1.35,
-      image, images: images.filter(Boolean), link, category, desc, brand,
-      sold: Math.floor(Math.random() * 200) + 20,
-      rating: +(4 + Math.random() * 0.9).toFixed(1),
-    };
+    return { id, name: title, price, oldPrice: oldPrice > price ? oldPrice : price * 1.35, image, images: images.filter(Boolean), link, category, desc, brand, sold: Math.floor(Math.random() * 200) + 20, rating: +(4 + Math.random() * 0.9).toFixed(1) };
   });
 
   cache.updatedAt = new Date();
-  console.log(`Cache atualizado: ${cache.produtos.length} produtos`);
+  console.log(`Cache: ${cache.produtos.length} produtos`);
 }
 
-// Carregar ao iniciar e refresh a cada 15 min
-carregarXML().catch(e => console.error("Erro ao carregar XML:", e.message));
+carregarXML().catch(e => console.error("Erro XML:", e.message));
 setInterval(() => carregarXML().catch(e => console.error("Refresh XML falhou:", e.message)), 15 * 60 * 1000);
 
 // ─── ENDPOINTS PRODUTOS ───────────────────────────────────────────────────────
-app.get("/produtos", (_, res) => {
-  res.json({ ok: true, produtos: cache.produtos, total: cache.produtos.length, updatedAt: cache.updatedAt });
-});
-
+app.get("/produtos", (_, res) => res.json({ ok: true, produtos: cache.produtos, total: cache.produtos.length, updatedAt: cache.updatedAt }));
 app.get("/produtos/:id", (req, res) => {
   const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
   if (!p) return res.status(404).json({ ok: false, erro: "Produto não encontrado" });
   res.json({ ok: true, ...p });
 });
-
 app.post("/cache/refresh", async (_, res) => {
-  try {
-    await carregarXML();
-    res.json({ ok: true, total: cache.produtos.length });
-  } catch (e) {
-    res.status(500).json({ ok: false, erro: e.message });
-  }
+  try { await carregarXML(); res.json({ ok: true, total: cache.produtos.length }); }
+  catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
-// ─── MERCADO PAGO — CRIAR PREFERÊNCIA DE PAGAMENTO ────────────────────────────
+// ─── MERCADO PAGO — CRIAR PREFERÊNCIA ─────────────────────────────────────────
 app.post("/checkout/mp", async (req, res) => {
   try {
     const { items, payer, shipping_cost = 0, seller_code } = req.body;
+    if (!items || !items.length) return res.status(400).json({ ok: false, erro: "Carrinho vazio" });
 
-    if (!items || !items.length) {
-      return res.status(400).json({ ok: false, erro: "Nenhum item no carrinho" });
-    }
-
-    // Montar itens pra API do MP
     const mpItems = items.map(item => ({
-      id: String(item.id),
-      title: String(item.name).substring(0, 256),
+      id: String(item.id), title: String(item.name).substring(0, 256),
       description: String(item.desc || item.name).substring(0, 256),
-      picture_url: item.image || FALLBACK,
-      category_id: "home",
-      quantity: Number(item.qty) || 1,
-      currency_id: "BRL",
+      picture_url: item.image || FALLBACK, category_id: "home",
+      quantity: Number(item.qty) || 1, currency_id: "BRL",
       unit_price: Number(Number(item.price).toFixed(2)),
     }));
 
-    // Adicionar frete como item se > 0
     if (shipping_cost > 0) {
-      mpItems.push({
-        id: "frete",
-        title: "Frete — Entrega Ceará",
-        quantity: 1,
-        currency_id: "BRL",
-        unit_price: Number(Number(shipping_cost).toFixed(2)),
-      });
+      mpItems.push({ id: "frete", title: "Frete — Entrega Ceará", quantity: 1, currency_id: "BRL", unit_price: Number(Number(shipping_cost).toFixed(2)) });
     }
 
-    // ID interno do pedido
     const orderId = `ART-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+    const total = mpItems.reduce((s, i) => s + i.unit_price * i.quantity, 0);
 
     const preference = {
       items: mpItems,
-      payer: payer ? {
-        name: payer.name || "",
-        email: payer.email || "",
-        phone: payer.phone ? { number: payer.phone } : undefined,
-      } : undefined,
+      payer: payer ? { name: payer.name || "", email: payer.email || "", phone: payer.phone ? { number: payer.phone } : undefined } : undefined,
       back_urls: {
         success: `${BACKEND_URL}/checkout/retorno?status=approved&order=${orderId}`,
         failure: `${BACKEND_URL}/checkout/retorno?status=rejected&order=${orderId}`,
         pending: `${BACKEND_URL}/checkout/retorno?status=pending&order=${orderId}`,
       },
-      auto_return: "approved",
-      external_reference: orderId,
+      auto_return: "approved", external_reference: orderId,
       notification_url: `${BACKEND_URL}/webhook/mp`,
       statement_descriptor: "ART MOVEIS",
-      payment_methods: {
-        excluded_payment_types: [],
-        installments: 12,
-      },
-      metadata: {
-        seller_code: seller_code || null,
-        app: "artmoveis-app",
-      },
+      payment_methods: { excluded_payment_types: [], installments: 12 },
+      metadata: { seller_code: seller_code || null, app: "artmoveis-app" },
     };
 
-    console.log(`[MP] Criando preferência: ${orderId} — ${mpItems.length} itens`);
-
+    console.log(`[MP] Criando: ${orderId}`);
     const { data } = await axios.post(`${MP_API}/checkout/preferences`, preference, {
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
-      },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
     });
 
-    // Salvar pedido localmente
-    pedidos.set(orderId, {
-      id: orderId,
-      mp_preference_id: data.id,
-      items,
-      payer,
-      shipping_cost,
-      seller_code,
-      status: "pending",
-      created_at: new Date().toISOString(),
-      total: mpItems.reduce((s, i) => s + i.unit_price * i.quantity, 0),
-    });
+    // Salvar no Supabase
+    try {
+      if (payer?.email) {
+        await sb.upsert("clientes", { email: payer.email, nome: payer.name || "", telefone: payer.phone || "" });
+      }
+      await sb.insert("pedidos", {
+        id: orderId, cliente_nome: payer?.name || null, cliente_email: payer?.email || null,
+        cliente_telefone: payer?.phone || null, items: JSON.stringify(items),
+        subtotal: total - shipping_cost, frete: shipping_cost, total,
+        status: "pending", mp_preference_id: data.id, seller_code: seller_code || null,
+      });
+      console.log(`[DB] Pedido ${orderId} salvo`);
+    } catch (dbErr) {
+      console.error("[DB] Erro:", dbErr.response?.data || dbErr.message);
+    }
 
-    console.log(`[MP] Preferência criada: ${data.id} → ${data.init_point}`);
-
-    res.json({
-      ok: true,
-      order_id: orderId,
-      preference_id: data.id,
-      checkout_url: data.init_point,        // URL do checkout MP (produção)
-      sandbox_url: data.sandbox_init_point,  // URL sandbox (pra testes)
-    });
+    res.json({ ok: true, order_id: orderId, preference_id: data.id, checkout_url: data.init_point, sandbox_url: data.sandbox_init_point });
 
   } catch (e) {
     console.error("[MP] Erro:", e.response?.data || e.message);
-    res.status(500).json({
-      ok: false,
-      erro: "Erro ao criar checkout",
-      detalhes: e.response?.data?.message || e.message,
-    });
+    res.status(500).json({ ok: false, erro: "Erro ao criar checkout", detalhes: e.response?.data?.message || e.message });
   }
 });
 
-// ─── MERCADO PAGO — WEBHOOK DE NOTIFICAÇÃO ────────────────────────────────────
+// ─── WEBHOOK MP ───────────────────────────────────────────────────────────────
 app.post("/webhook/mp", async (req, res) => {
   try {
     const { type, data } = req.body;
-    console.log(`[MP Webhook] Tipo: ${type}, ID: ${data?.id}`);
+    console.log(`[Webhook] ${type} — ${data?.id}`);
 
     if (type === "payment") {
-      // Buscar detalhes do pagamento
       const { data: payment } = await axios.get(`${MP_API}/v1/payments/${data.id}`, {
         headers: { "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
       });
-
       const orderId = payment.external_reference;
-      const status = payment.status; // approved, pending, rejected, etc
+      const status = payment.status;
+      console.log(`[Webhook] ${orderId}: ${status} R$ ${payment.transaction_amount}`);
 
-      console.log(`[MP Webhook] Pedido ${orderId}: ${status} — R$ ${payment.transaction_amount}`);
-
-      // Atualizar pedido local
-      if (pedidos.has(orderId)) {
-        const pedido = pedidos.get(orderId);
-        pedido.status = status;
-        pedido.mp_payment_id = data.id;
-        pedido.mp_status = status;
-        pedido.mp_status_detail = payment.status_detail;
-        pedido.paid_at = payment.date_approved || null;
-        pedido.payment_method = payment.payment_method_id;
-        pedidos.set(orderId, pedido);
+      try {
+        await sb.update("pedidos", { id: orderId }, {
+          status, mp_payment_id: String(data.id), mp_status: status,
+          mp_status_detail: payment.status_detail || null,
+          paid_at: payment.date_approved || null,
+          payment_method: payment.payment_method_id || null,
+        });
+        console.log(`[DB] ${orderId} → ${status}`);
+      } catch (dbErr) {
+        console.error("[DB] Erro update:", dbErr.response?.data || dbErr.message);
       }
-
-      // TODO: Quando tiver API da Tray, criar pedido lá
-      // if (status === "approved") { await criarPedidoTray(pedido); }
     }
-
     res.status(200).send("OK");
   } catch (e) {
-    console.error("[MP Webhook] Erro:", e.message);
-    res.status(200).send("OK"); // Sempre 200 pra MP não reenviar
+    console.error("[Webhook] Erro:", e.message);
+    res.status(200).send("OK");
   }
 });
 
-// ─── PÁGINA DE RETORNO APÓS PAGAMENTO ─────────────────────────────────────────
+// ─── RETORNO ──────────────────────────────────────────────────────────────────
 app.get("/checkout/retorno", (req, res) => {
   const { status, order } = req.query;
-  // Redireciona de volta pro app com status
   const appUrl = process.env.APP_URL || "https://artmoveis-app.vercel.app";
   res.redirect(`${appUrl}?payment_status=${status}&order=${order}`);
 });
 
-// ─── CONSULTAR STATUS DO PEDIDO ───────────────────────────────────────────────
-app.get("/pedido/:id", (req, res) => {
-  const pedido = pedidos.get(req.params.id);
-  if (!pedido) return res.status(404).json({ ok: false, erro: "Pedido não encontrado" });
-  res.json({ ok: true, ...pedido });
+// ─── PEDIDOS — CONSULTAS ──────────────────────────────────────────────────────
+app.get("/pedido/:id", async (req, res) => {
+  try {
+    const rows = await sb.select("pedidos", `id=eq.${req.params.id}`);
+    if (!rows?.length) return res.status(404).json({ ok: false, erro: "Pedido não encontrado" });
+    const p = rows[0]; if (typeof p.items === "string") p.items = JSON.parse(p.items);
+    res.json({ ok: true, ...p });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
-// ─── LISTAR PEDIDOS (admin) ───────────────────────────────────────────────────
-app.get("/pedidos", (_, res) => {
-  const lista = Array.from(pedidos.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  res.json({ ok: true, pedidos: lista, total: lista.length });
+app.get("/pedidos/cliente/:email", async (req, res) => {
+  try {
+    const rows = await sb.select("pedidos", `cliente_email=eq.${encodeURIComponent(req.params.email)}&order=created_at.desc&limit=50`);
+    const pedidos = (rows || []).map(p => { if (typeof p.items === "string") p.items = JSON.parse(p.items); return p; });
+    res.json({ ok: true, pedidos, total: pedidos.length });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/pedidos", async (req, res) => {
+  try {
+    const limit = req.query.limit || 100;
+    const status = req.query.status;
+    let query = `order=created_at.desc&limit=${limit}`;
+    if (status) query += `&status=eq.${status}`;
+    const rows = await sb.select("pedidos", query);
+    const pedidos = (rows || []).map(p => { if (typeof p.items === "string") p.items = JSON.parse(p.items); return p; });
+    res.json({ ok: true, pedidos, total: pedidos.length });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
 // ─── HEALTH ───────────────────────────────────────────────────────────────────
 app.get("/health", (_, res) => res.json({
-  status: "online",
-  autenticado: true,
-  fonte: "XML",
+  status: "online", autenticado: true, fonte: "XML",
   cachedProducts: cache.produtos.length,
-  mp_configured: !!MP_ACCESS_TOKEN,
-  pedidos_count: pedidos.size,
+  mp: !!MP_ACCESS_TOKEN, supabase: !!SUPABASE_KEY,
   updatedAt: cache.updatedAt,
 }));
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Art Móveis × MP rodando na porta ${PORT}`);
+  console.log(`Art Móveis v2 — porta ${PORT}`);
+  console.log(`Supabase: ${SUPABASE_KEY ? "OK" : "SEM CHAVE"} | MP: ${MP_ACCESS_TOKEN ? "OK" : "SEM TOKEN"}`);
 });
