@@ -166,6 +166,7 @@ app.post("/checkout/mp", async (req, res) => {
     };
 
     console.log(`[MP] Criando: ${orderId}`);
+    console.log("🕵️ Espião do Token:", MP_ACCESS_TOKEN ? `Tamanho: ${MP_ACCESS_TOKEN.length} | Início: ${MP_ACCESS_TOKEN.substring(0, 10)}...` : "⚠️ VAZIO OU INDEFINIDO");
     const { data } = await axios.post(`${MP_API}/checkout/preferences`, preference, {
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
     });
