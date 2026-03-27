@@ -1,197 +1,290 @@
 /**
  * Art Móveis × XML Feed — Backend
+ * Produtos via XML público da Tray + Checkout Mercado Pago
  */
 
 import express from "express";
 import cors from "cors";
 import axios from "axios";
 import { XMLParser } from "fast-xml-parser";
+import crypto from "crypto";
 
 const app = express();
 app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
 app.options("*", cors());
 app.use(express.json());
 
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
 const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
 const FALLBACK = "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400&q=80";
-const UA       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "APP_USR-4650107760827637-032712-e385940e3d8d25df9502d0ee92e5518b-1605928811";
+const MP_API = "https://api.mercadopago.com";
+const BACKEND_URL = process.env.BACKEND_URL || "https://artmoveis-bling-1.onrender.com";
 
+// ─── CACHE ────────────────────────────────────────────────────────────────────
 let cache = { produtos: [], updatedAt: null };
+
+// ─── PEDIDOS EM MEMÓRIA (futuramente: banco de dados) ─────────────────────────
+const pedidos = new Map();
 
 function parsePreco(val) {
   if (!val) return 0;
-  // formato "800.00 BRL" — remove tudo exceto números, ponto e vírgula
-  const clean = String(val).replace(/[^0-9.,]/g, "").replace(",", ".").replace(/\.(?=.*\.)/g, "");
-  return parseFloat(clean) || 0;
-}
-
-function decodeEntities(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return parseFloat(String(val).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
 }
 
 async function carregarXML() {
   console.log("Buscando XML...");
-  const { data: rawBuffer } = await axios.get(XML_URL, {
-    responseType: "arraybuffer",
+  const { data: raw } = await axios.get(XML_URL, {
+    responseType: "text",
     timeout: 30000,
-    headers: { "User-Agent": UA },
+    headers: { "Accept": "application/xml, text/xml, */*" }
   });
 
-  const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: "@_",
-    isArray: (tagName) => tagName === "item" || tagName === "g:additional_image_link",
-  });
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
   const json = parser.parse(raw);
 
-  const rootKeys = Object.keys(json);
-  console.log("Root keys:", rootKeys);
-
   let items = [];
-
   if (json?.rss?.channel?.item) {
     items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
-    console.log("Formato: RSS/Google Shopping,", items.length, "itens");
   } else if (json?.feed?.entry) {
     items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
-    console.log("Formato: Atom feed,", items.length, "itens");
   } else if (json?.produtos?.produto) {
     items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
-    console.log("Formato: Tray custom,", items.length, "itens");
-  } else {
-    for (const key of rootKeys) {
-      const sub = json[key];
-      if (sub && typeof sub === "object") {
-        for (const k2 of Object.keys(sub)) {
-          if (Array.isArray(sub[k2]) && sub[k2].length > 5) {
-            items = sub[k2];
-            console.log(`Formato desconhecido — usando ${key}.${k2},`, items.length, "itens");
-            break;
-          }
-        }
-      }
-      if (items.length > 0) break;
-    }
   }
 
-  if (items.length === 0) {
-    console.warn("Nenhum item encontrado. Estrutura:", JSON.stringify(json).slice(0, 500));
-    return [];
-  }
+  console.log(`XML: ${items.length} itens encontrados`);
 
-  const produtos = items.map((item, i) => {
-    const name      = decodeEntities(item["g:title"] || item.title || item.nome || item.name || `Produto ${i+1}`);
-    const precoRaw  = item["g:price"] || item.price || item.preco || item["g:sale_price"] || "0";
-    const promoRaw  = item["g:sale_price"] || item.promotional_price || item.preco_promocional || "0";
-    const preco     = parsePreco(precoRaw);
-    const promo     = parsePreco(promoRaw);
-    const price     = promo > 0 && promo < preco ? promo : preco;
-    const oldPrice  = promo > 0 && promo < preco ? preco : Math.round(preco * 1.35);
-    const image     = item["g:image_link"] || item.image_link || item.imagem || item.image || FALLBACK;
-    const link      = item["g:link"] || item.link || item.url || "";
-    const category  = decodeEntities(item["g:product_type"] || item.product_type || item.categoria || item.category || "Geral");
-    const id        = item["g:id"] || item.id || item["g:item_group_id"] || String(i + 1);
-    const desc      = decodeEntities(item["g:description"] || item.description || item.descricao || name);
+  cache.produtos = items.map((item, idx) => {
+    const title = item["g:title"] || item.title || item.nome || `Produto ${idx}`;
+    const price = parsePreco(item["g:sale_price"] || item["g:price"] || item.price || item.preco);
+    const oldPrice = parsePreco(item["g:price"] || item.price || item.preco) || price * 1.35;
+    const image = item["g:image_link"] || item.image || item.imagem || FALLBACK;
+    const link = item["g:link"] || item.link || item.url || "";
+    const category = item["g:product_type"] || item["g:google_product_category"] || item.category || item.categoria || "Geral";
+    const desc = item["g:description"] || item.description || item.descricao || "";
+    const id = item["g:id"] || item.id || String(idx + 1);
+    const brand = item["g:brand"] || item.brand || item.marca || "Art Móveis";
 
-    // Imagens adicionais do feed Google Shopping
+    // Imagens adicionais
     const addImgs = item["g:additional_image_link"];
-    const extraImages = addImgs
-      ? (Array.isArray(addImgs) ? addImgs : [addImgs]).map(String).filter(Boolean)
-      : [];
-    const images = [String(image), ...extraImages.filter(x => x !== String(image))];
+    let images = [image];
+    if (addImgs) {
+      if (Array.isArray(addImgs)) images = [image, ...addImgs];
+      else images = [image, addImgs];
+    }
 
     return {
-      id: String(id),
-      name,
-      category: category.split(">").pop().trim(),
-      price,
-      oldPrice,
-      image: String(image),
-      images,
-      link: String(link),
-      desc: desc.replace(/<[^>]*>/g, "").slice(0, 300),
-      sold: Math.floor(Math.random() * 200) + 10,
-      rating: +(4.4 + Math.random() * 0.6).toFixed(1),
-      reviews: Math.floor(Math.random() * 80) + 5,
+      id, name: title, price, oldPrice: oldPrice > price ? oldPrice : price * 1.35,
+      image, images: images.filter(Boolean), link, category, desc, brand,
+      sold: Math.floor(Math.random() * 200) + 20,
+      rating: +(4 + Math.random() * 0.9).toFixed(1),
     };
-  }).filter(p => p.price > 0);
+  });
 
-  console.log(`XML processado: ${produtos.length} produtos com preço`);
-  return produtos;
+  cache.updatedAt = new Date();
+  console.log(`Cache atualizado: ${cache.produtos.length} produtos`);
 }
 
-app.get("/produtos", async (req, res) => {
+// Carregar ao iniciar e refresh a cada 15 min
+carregarXML().catch(e => console.error("Erro ao carregar XML:", e.message));
+setInterval(() => carregarXML().catch(e => console.error("Refresh XML falhou:", e.message)), 15 * 60 * 1000);
+
+// ─── ENDPOINTS PRODUTOS ───────────────────────────────────────────────────────
+app.get("/produtos", (_, res) => {
+  res.json({ ok: true, produtos: cache.produtos, total: cache.produtos.length, updatedAt: cache.updatedAt });
+});
+
+app.get("/produtos/:id", (req, res) => {
+  const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
+  if (!p) return res.status(404).json({ ok: false, erro: "Produto não encontrado" });
+  res.json({ ok: true, ...p });
+});
+
+app.post("/cache/refresh", async (_, res) => {
   try {
-    res.set("Cache-Control", "no-store");
-    if (cache.produtos.length > 0) {
-      console.log(`Cache hit: ${cache.produtos.length} produtos`);
-      return res.json({ ok: true, total: cache.produtos.length, produtos: cache.produtos });
+    await carregarXML();
+    res.json({ ok: true, total: cache.produtos.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+// ─── MERCADO PAGO — CRIAR PREFERÊNCIA DE PAGAMENTO ────────────────────────────
+app.post("/checkout/mp", async (req, res) => {
+  try {
+    const { items, payer, shipping_cost = 0, seller_code } = req.body;
+
+    if (!items || !items.length) {
+      return res.status(400).json({ ok: false, erro: "Nenhum item no carrinho" });
     }
-    const produtos = await carregarXML();
-    cache.produtos = produtos;
-    cache.updatedAt = new Date();
-    res.json({ ok: true, total: produtos.length, produtos });
-  } catch (e) {
-    console.error("Erro /produtos:", e.message);
-    res.status(500).json({ ok: false, erro: e.message });
-  }
-});
 
-app.get("/produtos/:id", async (req, res) => {
-  try {
-    if (cache.produtos.length === 0) {
-      const produtos = await carregarXML();
-      cache.produtos = produtos;
+    // Montar itens pra API do MP
+    const mpItems = items.map(item => ({
+      id: String(item.id),
+      title: String(item.name).substring(0, 256),
+      description: String(item.desc || item.name).substring(0, 256),
+      picture_url: item.image || FALLBACK,
+      category_id: "home",
+      quantity: Number(item.qty) || 1,
+      currency_id: "BRL",
+      unit_price: Number(Number(item.price).toFixed(2)),
+    }));
+
+    // Adicionar frete como item se > 0
+    if (shipping_cost > 0) {
+      mpItems.push({
+        id: "frete",
+        title: "Frete — Entrega Ceará",
+        quantity: 1,
+        currency_id: "BRL",
+        unit_price: Number(Number(shipping_cost).toFixed(2)),
+      });
     }
-    const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
-    if (!p) return res.status(404).json({ ok: false, erro: "Não encontrado" });
-    res.json({ ok: true, image: p.image, images: p.images || [p.image], desc: p.desc });
+
+    // ID interno do pedido
+    const orderId = `ART-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+
+    const preference = {
+      items: mpItems,
+      payer: payer ? {
+        name: payer.name || "",
+        email: payer.email || "",
+        phone: payer.phone ? { number: payer.phone } : undefined,
+      } : undefined,
+      back_urls: {
+        success: `${BACKEND_URL}/checkout/retorno?status=approved&order=${orderId}`,
+        failure: `${BACKEND_URL}/checkout/retorno?status=rejected&order=${orderId}`,
+        pending: `${BACKEND_URL}/checkout/retorno?status=pending&order=${orderId}`,
+      },
+      auto_return: "approved",
+      external_reference: orderId,
+      notification_url: `${BACKEND_URL}/webhook/mp`,
+      statement_descriptor: "ART MOVEIS",
+      payment_methods: {
+        excluded_payment_types: [],
+        installments: 12,
+      },
+      metadata: {
+        seller_code: seller_code || null,
+        app: "artmoveis-app",
+      },
+    };
+
+    console.log(`[MP] Criando preferência: ${orderId} — ${mpItems.length} itens`);
+
+    const { data } = await axios.post(`${MP_API}/checkout/preferences`, preference, {
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`,
+      },
+    });
+
+    // Salvar pedido localmente
+    pedidos.set(orderId, {
+      id: orderId,
+      mp_preference_id: data.id,
+      items,
+      payer,
+      shipping_cost,
+      seller_code,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      total: mpItems.reduce((s, i) => s + i.unit_price * i.quantity, 0),
+    });
+
+    console.log(`[MP] Preferência criada: ${data.id} → ${data.init_point}`);
+
+    res.json({
+      ok: true,
+      order_id: orderId,
+      preference_id: data.id,
+      checkout_url: data.init_point,        // URL do checkout MP (produção)
+      sandbox_url: data.sandbox_init_point,  // URL sandbox (pra testes)
+    });
+
   } catch (e) {
-    res.status(500).json({ ok: false, erro: e.message });
+    console.error("[MP] Erro:", e.response?.data || e.message);
+    res.status(500).json({
+      ok: false,
+      erro: "Erro ao criar checkout",
+      detalhes: e.response?.data?.message || e.message,
+    });
   }
 });
 
-app.get("/debug/xml", async (req, res) => {
+// ─── MERCADO PAGO — WEBHOOK DE NOTIFICAÇÃO ────────────────────────────────────
+app.post("/webhook/mp", async (req, res) => {
   try {
-    const { data: rawBuffer } = await axios.get(XML_URL, { responseType: "arraybuffer", timeout: 30000, headers: { "User-Agent": UA } });
-    const raw = new TextDecoder("iso-8859-1").decode(rawBuffer);
-    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
-    const json = parser.parse(raw);
-    res.json({ rootKeys: Object.keys(json), sample: JSON.stringify(json).slice(0, 3000) });
+    const { type, data } = req.body;
+    console.log(`[MP Webhook] Tipo: ${type}, ID: ${data?.id}`);
+
+    if (type === "payment") {
+      // Buscar detalhes do pagamento
+      const { data: payment } = await axios.get(`${MP_API}/v1/payments/${data.id}`, {
+        headers: { "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+
+      const orderId = payment.external_reference;
+      const status = payment.status; // approved, pending, rejected, etc
+
+      console.log(`[MP Webhook] Pedido ${orderId}: ${status} — R$ ${payment.transaction_amount}`);
+
+      // Atualizar pedido local
+      if (pedidos.has(orderId)) {
+        const pedido = pedidos.get(orderId);
+        pedido.status = status;
+        pedido.mp_payment_id = data.id;
+        pedido.mp_status = status;
+        pedido.mp_status_detail = payment.status_detail;
+        pedido.paid_at = payment.date_approved || null;
+        pedido.payment_method = payment.payment_method_id;
+        pedidos.set(orderId, pedido);
+      }
+
+      // TODO: Quando tiver API da Tray, criar pedido lá
+      // if (status === "approved") { await criarPedidoTray(pedido); }
+    }
+
+    res.status(200).send("OK");
   } catch (e) {
-    res.status(500).json({ erro: e.message });
+    console.error("[MP Webhook] Erro:", e.message);
+    res.status(200).send("OK"); // Sempre 200 pra MP não reenviar
   }
 });
 
-app.post("/cache/refresh", (req, res) => {
-  cache = { produtos: [], updatedAt: null };
-  res.json({ ok: true, msg: "Cache limpo" });
+// ─── PÁGINA DE RETORNO APÓS PAGAMENTO ─────────────────────────────────────────
+app.get("/checkout/retorno", (req, res) => {
+  const { status, order } = req.query;
+  // Redireciona de volta pro app com status
+  const appUrl = process.env.APP_URL || "https://artmoveis-app.vercel.app";
+  res.redirect(`${appUrl}?payment_status=${status}&order=${order}`);
 });
 
-app.get("/auth/login", (_, res) => res.redirect("/health"));
-app.get("/auth/status", (_, res) => res.json({ autenticado: true, tokenValido: true }));
-
-app.post("/pedidos", async (req, res) => {
-  try {
-    const { items, total, payment, coupon } = req.body;
-    console.log("Pedido:", { items, total, payment, coupon });
-    res.json({ ok: true, mensagem: "Pedido registrado!" });
-  } catch (e) {
-    res.status(500).json({ ok: false, erro: e.message });
-  }
+// ─── CONSULTAR STATUS DO PEDIDO ───────────────────────────────────────────────
+app.get("/pedido/:id", (req, res) => {
+  const pedido = pedidos.get(req.params.id);
+  if (!pedido) return res.status(404).json({ ok: false, erro: "Pedido não encontrado" });
+  res.json({ ok: true, ...pedido });
 });
 
-app.get("/health", (_, res) => res.json({ status: "online", autenticado: true, fonte: "XML", cachedProducts: cache.produtos.length }));
+// ─── LISTAR PEDIDOS (admin) ───────────────────────────────────────────────────
+app.get("/pedidos", (_, res) => {
+  const lista = Array.from(pedidos.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  res.json({ ok: true, pedidos: lista, total: lista.length });
+});
+
+// ─── HEALTH ───────────────────────────────────────────────────────────────────
+app.get("/health", (_, res) => res.json({
+  status: "online",
+  autenticado: true,
+  fonte: "XML",
+  cachedProducts: cache.produtos.length,
+  mp_configured: !!MP_ACCESS_TOKEN,
+  pedidos_count: pedidos.size,
+  updatedAt: cache.updatedAt,
+}));
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Art Moveis × XML rodando na porta ${PORT}`);
+  console.log(`Art Móveis × MP rodando na porta ${PORT}`);
 });
