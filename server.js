@@ -29,7 +29,33 @@ const pedidos = new Map();
 
 function parsePreco(val) {
   if (!val) return 0;
-  return parseFloat(String(val).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
+  let s = String(val).replace(/[R$\sBRL]/g, "").trim();
+  // Se tem vírgula como decimal (formato BR: 1.896,00)
+  if (s.includes(",")) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  }
+  // Se não tem vírgula, o ponto é decimal (formato intl: 1896.00)
+  return parseFloat(s) || 0;
+}
+
+// Decodificar HTML entities nas strings do XML
+function decodeEntities(str) {
+  if (!str || typeof str !== "string") return str || "";
+  let s = str
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+  // Segundo passe pra double-encoded
+  s = s.replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+  return s;
+}
+
+function decodeCategory(str) {
+  let s = decodeEntities(str);
+  // "Cozinhas > Kit Cozinha" → "Cozinhas"
+  if (s.includes(">")) s = s.split(">")[0].trim();
+  return s;
 }
 
 async function carregarXML() {
@@ -55,15 +81,15 @@ async function carregarXML() {
   console.log(`XML: ${items.length} itens encontrados`);
 
   cache.produtos = items.map((item, idx) => {
-    const title = item["g:title"] || item.title || item.nome || `Produto ${idx}`;
+    const title = decodeEntities(item["g:title"] || item.title || item.nome || `Produto ${idx}`);
     const price = parsePreco(item["g:sale_price"] || item["g:price"] || item.price || item.preco);
     const oldPrice = parsePreco(item["g:price"] || item.price || item.preco) || price * 1.35;
     const image = item["g:image_link"] || item.image || item.imagem || FALLBACK;
     const link = item["g:link"] || item.link || item.url || "";
-    const category = item["g:product_type"] || item["g:google_product_category"] || item.category || item.categoria || "Geral";
-    const desc = item["g:description"] || item.description || item.descricao || "";
+    const category = decodeCategory(item["g:product_type"] || item["g:google_product_category"] || item.category || item.categoria || "Geral");
+    const desc = decodeEntities(item["g:description"] || item.description || item.descricao || "");
     const id = item["g:id"] || item.id || String(idx + 1);
-    const brand = item["g:brand"] || item.brand || item.marca || "Art Móveis";
+    const brand = decodeEntities(item["g:brand"] || item.brand || item.marca || "Art Móveis");
 
     // Imagens adicionais
     const addImgs = item["g:additional_image_link"];
