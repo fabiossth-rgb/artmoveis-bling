@@ -119,6 +119,19 @@ setInterval(() => carregarXML().catch(e => console.error("Refresh XML falhou:", 
 
 // ─── ENDPOINTS PRODUTOS ───────────────────────────────────────────────────────
 app.get("/produtos", (_, res) => res.json({ ok: true, produtos: cache.produtos, total: cache.produtos.length, updatedAt: cache.updatedAt }));
+app.get("/debug-xml-fields", async (_, res) => {
+  try {
+    const { data: raw } = await axios.get(XML_URL, { responseType: "text", timeout: 30000, headers: { "Accept": "application/xml, text/xml, */*" } });
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+    const json = parser.parse(raw);
+    let items = [];
+    if (json?.rss?.channel?.item) items = Array.isArray(json.rss.channel.item) ? json.rss.channel.item : [json.rss.channel.item];
+    else if (json?.feed?.entry) items = Array.isArray(json.feed.entry) ? json.feed.entry : [json.feed.entry];
+    else if (json?.produtos?.produto) items = Array.isArray(json.produtos.produto) ? json.produtos.produto : [json.produtos.produto];
+    const sample = items.slice(0, 2).map(i => Object.keys(i).reduce((o, k) => { o[k] = typeof i[k] === "string" ? i[k].substring(0, 100) : i[k]; return o; }, {}));
+    res.json({ ok: true, totalItems: items.length, fields: Object.keys(items[0] || {}), sample });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.get("/produtos/:id", (req, res) => {
   const p = cache.produtos.find(x => String(x.id) === String(req.params.id));
   if (!p) return res.status(404).json({ ok: false, erro: "Produto não encontrado" });
