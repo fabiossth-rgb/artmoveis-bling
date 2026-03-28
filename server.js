@@ -107,11 +107,16 @@ async function carregarXML() {
     let images = [image];
     if (addImgs) { if (Array.isArray(addImgs)) images = [image, ...addImgs]; else images = [image, addImgs]; }
 
-    return { id, name: title, price, oldPrice: oldPrice > price ? oldPrice : price * 1.35, image, images: images.filter(Boolean), link, category, desc, brand, sold: Math.floor(Math.random() * 200) + 20, rating: +(4 + Math.random() * 0.9).toFixed(1) };
+    const availability = (item["g:availability"] || item.availability || "in stock").toLowerCase().trim();
+    const inStock = availability === "in stock";
+
+    return { id, name: title, price, oldPrice: oldPrice > price ? oldPrice : price * 1.35, image, images: images.filter(Boolean), link, category, desc, brand, inStock, sold: Math.floor(Math.random() * 200) + 20, rating: +(4 + Math.random() * 0.9).toFixed(1) };
   });
 
+  const total = cache.produtos.length;
+  const outOfStock = cache.produtos.filter(p => !p.inStock).length;
   cache.updatedAt = new Date();
-  console.log(`Cache: ${cache.produtos.length} produtos`);
+  console.log(`Cache: ${total} produtos (${outOfStock} fora de estoque)`);
 }
 
 carregarXML().catch(e => console.error("Erro XML:", e.message));
@@ -147,6 +152,17 @@ app.post("/checkout/mp", async (req, res) => {
   try {
     const { items, payer, shipping_cost = 0, seller_code, endereco } = req.body;
     if (!items || !items.length) return res.status(400).json({ ok: false, erro: "Carrinho vazio" });
+
+    // Validar estoque
+    const semEstoque = items.filter(item => {
+      if (item.id === "desconto") return false; // cupom, não é produto
+      const prod = cache.produtos.find(p => String(p.id) === String(item.id));
+      return prod && !prod.inStock;
+    });
+    if (semEstoque.length > 0) {
+      const nomes = semEstoque.map(i => i.name).join(", ");
+      return res.status(400).json({ ok: false, erro: `Produto(s) fora de estoque: ${nomes}` });
+    }
 
     const mpItems = items.map(item => ({
       id: String(item.id), title: String(item.name).substring(0, 256),
