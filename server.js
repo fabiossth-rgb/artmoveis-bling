@@ -194,6 +194,77 @@ app.post("/checkout/mp", async (req, res) => {
   }
 });
 
+// ─── EMAIL DE NOTIFICAÇÃO ─────────────────────────────────────────────────────
+const NOTIFY_EMAIL = "siteevendasonlineart@gmail.com";
+
+async function enviarEmailPedido(pedido, payment) {
+  try {
+    // Buscar dados completos do pedido no Supabase
+    let pedidoDB = pedido;
+    if (!pedidoDB?.items) {
+      const rows = await sb.select("pedidos", `id=eq.${pedido.id || payment.external_reference}`);
+      if (rows?.length) pedidoDB = rows[0];
+    }
+    if (typeof pedidoDB.items === "string") pedidoDB.items = JSON.parse(pedidoDB.items);
+
+    const itensHtml = (pedidoDB.items || []).map(i =>
+      `<tr><td style="padding:8px;border-bottom:1px solid #eee">${i.name}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center">${i.qty}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:right">R$ ${Number(i.price).toFixed(2)}</td></tr>`
+    ).join("");
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
+        <div style="background:linear-gradient(135deg,#b91c1c,#ef4444);padding:20px;border-radius:12px 12px 0 0">
+          <h1 style="color:white;margin:0;font-size:20px">🛒 Novo Pedido — Art Móveis</h1>
+        </div>
+        <div style="background:#fff;padding:20px;border:1px solid #eee;border-top:none;border-radius:0 0 12px 12px">
+          <h2 style="color:#333;font-size:16px;margin-top:0">Pedido ${pedidoDB.id}</h2>
+          <p style="color:#666;font-size:14px"><strong>Status:</strong> ${payment?.status || pedidoDB.status || "pending"}</p>
+          <p style="color:#666;font-size:14px"><strong>Pagamento:</strong> ${payment?.payment_method_id || pedidoDB.payment_method || "—"}</p>
+          <p style="color:#666;font-size:14px"><strong>Data:</strong> ${new Date().toLocaleString("pt-BR", {timeZone:"America/Fortaleza"})}</p>
+          
+          <h3 style="color:#333;font-size:14px;margin-top:20px;border-bottom:2px solid #ef4444;padding-bottom:5px">👤 Cliente</h3>
+          <p style="color:#666;font-size:14px"><strong>Nome:</strong> ${pedidoDB.cliente_nome || "—"}</p>
+          <p style="color:#666;font-size:14px"><strong>Email:</strong> ${pedidoDB.cliente_email || "—"}</p>
+          <p style="color:#666;font-size:14px"><strong>Telefone:</strong> ${pedidoDB.cliente_telefone || "—"}</p>
+          
+          <h3 style="color:#333;font-size:14px;margin-top:20px;border-bottom:2px solid #ef4444;padding-bottom:5px">📦 Produtos</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <tr style="background:#f9f9f9"><th style="padding:8px;text-align:left">Produto</th><th style="padding:8px;text-align:center">Qtd</th><th style="padding:8px;text-align:right">Preço</th></tr>
+            ${itensHtml}
+          </table>
+          
+          <div style="margin-top:15px;padding:15px;background:#f9f9f9;border-radius:8px;font-size:14px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px"><span>Subtotal:</span><span>R$ ${Number(pedidoDB.subtotal || 0).toFixed(2)}</span></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px"><span>Frete:</span><span>R$ ${Number(pedidoDB.frete || 0).toFixed(2)}</span></div>
+            ${Number(pedidoDB.desconto) > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:5px;color:#16a34a"><span>Desconto:</span><span>-R$ ${Number(pedidoDB.desconto).toFixed(2)}</span></div>` : ""}
+            <div style="display:flex;justify-content:space-between;font-weight:bold;font-size:16px;border-top:2px solid #ddd;padding-top:8px;margin-top:5px"><span>TOTAL:</span><span style="color:#b91c1c">R$ ${Number(pedidoDB.total || 0).toFixed(2)}</span></div>
+          </div>
+          
+          ${pedidoDB.seller_code === "RETIRADA_LOJA" ? '<p style="background:#dcfce7;color:#166534;padding:10px;border-radius:8px;font-size:13px;margin-top:15px">🏪 <strong>RETIRADA NA LOJA</strong></p>' : ""}
+          
+          <p style="color:#999;font-size:11px;margin-top:20px;text-align:center">App Art Móveis — Notificação automática</p>
+        </div>
+      </div>
+    `;
+
+    // Enviar via Resend (se tiver key) ou logar
+    const RESEND_KEY = process.env.RESEND_KEY;
+    if (RESEND_KEY) {
+      await axios.post("https://api.resend.com/emails", {
+        from: "Art Móveis <onboarding@resend.dev>",
+        to: [NOTIFY_EMAIL],
+        subject: `🛒 Pedido ${pedidoDB.id} — R$ ${Number(pedidoDB.total || 0).toFixed(2)} — ${pedidoDB.cliente_nome || "Cliente"}`,
+        html,
+      }, { headers: { "Authorization": `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" } });
+      console.log(`[Email] Notificação enviada → ${NOTIFY_EMAIL}`);
+    } else {
+      console.log(`[Email] Sem RESEND_KEY — email não enviado. Dados do pedido logados acima.`);
+    }
+  } catch (e) {
+    console.error("[Email] Erro:", e.response?.data || e.message);
+  }
+}
+
 // ─── WEBHOOK MP ───────────────────────────────────────────────────────────────
 app.post("/webhook/mp", async (req, res) => {
   try {
@@ -219,6 +290,9 @@ app.post("/webhook/mp", async (req, res) => {
       } catch (dbErr) {
         console.error("[DB] Erro update:", dbErr.response?.data || dbErr.message);
       }
+
+      // Enviar email de notificação
+      await enviarEmailPedido({ id: orderId }, payment);
     }
     res.status(200).send("OK");
   } catch (e) {
@@ -286,6 +360,74 @@ app.get("/avaliacoes/cliente/:email", async (req, res) => {
     const rows = await sb.select("avaliacoes", `cliente_email=eq.${encodeURIComponent(req.params.email)}&order=created_at.desc&limit=50`);
     res.json({ ok: true, avaliacoes: rows || [], total: (rows || []).length });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── PAINEL ADMIN ─────────────────────────────────────────────────────────────
+app.get("/painel", (_, res) => {
+  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Art Móveis — Painel de Pedidos</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#f5f5f5;color:#333}
+.header{background:linear-gradient(135deg,#b91c1c,#ef4444);padding:20px;color:#fff}.header h1{font-size:20px;font-weight:900}.header p{font-size:12px;opacity:.7;margin-top:4px}
+.filters{padding:12px 16px;display:flex;gap:8px;overflow-x:auto;background:#fff;border-bottom:1px solid #eee}
+.filters button{padding:6px 14px;border-radius:20px;border:1px solid #ddd;background:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.filters button.active{background:#b91c1c;color:#fff;border-color:#b91c1c}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;padding:16px}
+.stat{background:#fff;border-radius:12px;padding:16px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.stat .num{font-size:24px;font-weight:900;color:#b91c1c}.stat .label{font-size:11px;color:#999;margin-top:4px}
+.orders{padding:0 16px 100px}
+.order{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.order .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.order .id{font-weight:800;font-size:13px}.order .badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
+.badge-approved{background:#dcfce7;color:#166534}.badge-pending{background:#fef9c3;color:#854d0e}.badge-rejected{background:#fee2e2;color:#991b1b}
+.order .info{font-size:12px;color:#666;margin:3px 0}.order .items{font-size:12px;color:#888;margin-top:6px}
+.order .total{font-size:16px;font-weight:900;color:#b91c1c;margin-top:8px}
+.empty{text-align:center;padding:60px 20px;color:#ccc;font-size:14px}
+.loading{text-align:center;padding:60px;color:#999}
+</style></head><body>
+<div class="header"><h1>Painel Art Móveis</h1><p>Gestão de pedidos em tempo real</p></div>
+<div class="filters" id="filters">
+<button class="active" data-s="all">Todos</button><button data-s="approved">Pagos</button><button data-s="pending">Pendentes</button><button data-s="rejected">Recusados</button>
+</div>
+<div class="stats" id="stats"></div>
+<div class="orders" id="orders"><div class="loading">Carregando pedidos...</div></div>
+<script>
+let allOrders=[];const $=id=>document.getElementById(id);
+async function load(){
+  try{const r=await fetch('/pedidos?limit=200');const d=await r.json();allOrders=d.pedidos||[];render('all');}
+  catch(e){$('orders').innerHTML='<div class="empty">Erro ao carregar</div>';}
+}
+function render(filter){
+  const list=filter==='all'?allOrders:allOrders.filter(o=>o.status===filter);
+  const approved=allOrders.filter(o=>o.status==='approved');
+  const totalVendas=approved.reduce((s,o)=>s+Number(o.total||0),0);
+  $('stats').innerHTML=\`
+    <div class="stat"><div class="num">\${allOrders.length}</div><div class="label">Total Pedidos</div></div>
+    <div class="stat"><div class="num">\${approved.length}</div><div class="label">Pagos</div></div>
+    <div class="stat"><div class="num">R$ \${totalVendas.toFixed(2)}</div><div class="label">Faturamento</div></div>
+    <div class="stat"><div class="num">\${allOrders.filter(o=>o.status==='pending').length}</div><div class="label">Pendentes</div></div>
+  \`;
+  document.querySelectorAll('.filters button').forEach(b=>{b.classList.toggle('active',b.dataset.s===filter);b.onclick=()=>render(b.dataset.s);});
+  if(!list.length){$('orders').innerHTML='<div class="empty">Nenhum pedido</div>';return;}
+  $('orders').innerHTML=list.map(o=>{
+    const items=(Array.isArray(o.items)?o.items:[]).map(i=>\`\${i.name} x\${i.qty}\`).join(', ');
+    const badge=o.status==='approved'?'badge-approved':o.status==='pending'?'badge-pending':'badge-rejected';
+    const label=o.status==='approved'?'Pago':o.status==='pending'?'Pendente':o.status==='rejected'?'Recusado':o.status;
+    const date=o.created_at?new Date(o.created_at).toLocaleString('pt-BR'):'';
+    return \`<div class="order">
+      <div class="top"><span class="id">\${o.id}</span><span class="badge \${badge}">\${label}</span></div>
+      <div class="info"><strong>\${o.cliente_nome||'—'}</strong> · \${o.cliente_email||''}</div>
+      <div class="info">\${o.cliente_telefone||''} · \${date}</div>
+      \${o.payment_method?'<div class="info">Pagamento: '+o.payment_method+'</div>':''}
+      \${o.seller_code==='RETIRADA_LOJA'?'<div class="info" style="color:#166534">🏪 Retirada na loja</div>':''}
+      <div class="items">\${items}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:11px;color:#999">Frete: R$ \${Number(o.frete||0).toFixed(2)}</span>
+        <span class="total">R$ \${Number(o.total||0).toFixed(2)}</span>
+      </div>
+    </div>\`;
+  }).join('');
+}
+load();setInterval(load,30000);
+</script></body></html>`);
 });
 
 // ─── HEALTH ───────────────────────────────────────────────────────────────────
