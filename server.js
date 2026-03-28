@@ -295,9 +295,60 @@ app.get("/test-email", async (req, res) => {
   }
 });
 
+// ─── VALIDAÇÃO WEBHOOK MP ────────────────────────────────────────────────────
+
+function validarWebhookMP(req) {
+  const secret = process.env.MP_WEBHOOK_SECRET;
+  if (!secret) return true; // Se não configurou secret, aceita (mas loga aviso)
+  
+  const xSignature = req.headers["x-signature"];
+  const xRequestId = req.headers["x-request-id"];
+  
+  if (!xSignature || !xRequestId) {
+    console.warn("[Webhook] Sem x-signature ou x-request-id — rejeitado");
+    return false;
+  }
+  
+  // Extrair ts e v1 do header: "ts=123456,v1=abcdef..."
+  const parts = {};
+  xSignature.split(",").forEach(part => {
+    const [key, val] = part.trim().split("=");
+    if (key && val) parts[key] = val;
+  });
+  
+  const ts = parts.ts;
+  const v1 = parts.v1;
+  if (!ts || !v1) {
+    console.warn("[Webhook] x-signature mal formado — rejeitado");
+    return false;
+  }
+  
+  // Montar template: id:DATA_ID;request-id:REQUEST_ID;ts:TIMESTAMP;
+  const dataId = req.body?.data?.id;
+  const template = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+  
+  const hash = crypto
+    .createHmac("sha256", secret)
+    .update(template)
+    .digest("hex");
+  
+  if (hash !== v1) {
+    console.warn(`[Webhook] Assinatura inválida — rejeitado`);
+    return false;
+  }
+  
+  return true;
+}
+
 // ─── WEBHOOK MP ───────────────────────────────────────────────────────────────
 app.post("/webhook/mp", async (req, res) => {
   try {
+    // Validar assinatura
+    if (!validarWebhookMP(req)) {
+      console.warn("[Webhook] Request não autenticado — ignorando");
+      return res.status(401).send("Unauthorized");
+    }
+    
     const { type, data } = req.body;
     console.log(`[Webhook] ${type} — ${data?.id}`);
 
@@ -465,12 +516,12 @@ load();setInterval(load,30000);
 app.get("/health", (_, res) => res.json({
   status: "online", autenticado: true, fonte: "XML",
   cachedProducts: cache.produtos.length,
-  mp: !!MP_ACCESS_TOKEN, supabase: !!SUPABASE_KEY, resend: !!process.env.RESEND_KEY,
+  mp: !!MP_ACCESS_TOKEN, supabase: !!SUPABASE_KEY, resend: !!process.env.RESEND_KEY, webhook_secret: !!process.env.MP_WEBHOOK_SECRET,
   updatedAt: cache.updatedAt,
 }));
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Art Móveis v2 — porta ${PORT}`);
-  console.log(`Supabase: ${SUPABASE_KEY ? "OK" : "SEM CHAVE"} | MP: ${MP_ACCESS_TOKEN ? "OK" : "SEM TOKEN"}`);
+  console.log(`Supabase: ${SUPABASE_KEY ? "OK" : "SEM CHAVE"} | MP: ${MP_ACCESS_TOKEN ? "OK" : "SEM TOKEN"} | Resend: ${process.env.RESEND_KEY ? "OK" : "SEM KEY"} | Webhook Secret: ${process.env.MP_WEBHOOK_SECRET ? "OK" : "SEM SECRET (webhook aberto)"}`);
 });
