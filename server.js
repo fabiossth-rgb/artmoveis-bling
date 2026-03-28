@@ -267,6 +267,34 @@ async function enviarEmailPedido(pedido, payment) {
   }
 }
 
+// ─── TESTE DE EMAIL (remover depois) ─────────────────────────────────────────
+app.get("/test-email", async (req, res) => {
+  const RESEND_KEY = process.env.RESEND_KEY;
+  if (!RESEND_KEY) return res.json({ ok: false, erro: "RESEND_KEY não configurada" });
+  try {
+    const r = await axios.post("https://api.resend.com/emails", {
+      from: "Art Móveis <onboarding@resend.dev>",
+      to: [NOTIFY_EMAIL],
+      subject: "✅ Teste — Email do App Art Móveis funcionando!",
+      html: `<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:20px">
+        <div style="background:linear-gradient(135deg,#b91c1c,#ef4444);padding:20px;border-radius:12px 12px 0 0">
+          <h1 style="color:white;margin:0;font-size:18px">✅ Teste de Email — Art Móveis</h1>
+        </div>
+        <div style="background:#fff;padding:20px;border:1px solid #eee;border-radius:0 0 12px 12px">
+          <p style="color:#333;font-size:14px">Se você está lendo isso, o sistema de notificação por email está funcionando!</p>
+          <p style="color:#666;font-size:13px">Quando um cliente finalizar uma compra pelo app, você receberá um email completo com todos os dados do pedido.</p>
+          <p style="color:#999;font-size:11px;margin-top:20px;text-align:center">App Art Móveis — ${new Date().toLocaleString("pt-BR", {timeZone:"America/Fortaleza"})}</p>
+        </div>
+      </div>`,
+    }, { headers: { "Authorization": `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" } });
+    console.log("[Test Email] Enviado:", r.data);
+    res.json({ ok: true, msg: `Email de teste enviado para ${NOTIFY_EMAIL}`, id: r.data?.id });
+  } catch (e) {
+    console.error("[Test Email] Erro:", e.response?.data || e.message);
+    res.json({ ok: false, erro: e.response?.data || e.message });
+  }
+});
+
 // ─── WEBHOOK MP ───────────────────────────────────────────────────────────────
 app.post("/webhook/mp", async (req, res) => {
   try {
@@ -437,7 +465,7 @@ load();setInterval(load,30000);
 app.get("/health", (_, res) => res.json({
   status: "online", autenticado: true, fonte: "XML",
   cachedProducts: cache.produtos.length,
-  mp: !!MP_ACCESS_TOKEN, supabase: !!SUPABASE_KEY,
+  mp: !!MP_ACCESS_TOKEN, supabase: !!SUPABASE_KEY, resend: !!process.env.RESEND_KEY,
   updatedAt: cache.updatedAt,
 }));
 
