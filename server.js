@@ -132,7 +132,7 @@ app.post("/cache/refresh", async (_, res) => {
 // ─── MERCADO PAGO — CRIAR PREFERÊNCIA ─────────────────────────────────────────
 app.post("/checkout/mp", async (req, res) => {
   try {
-    const { items, payer, shipping_cost = 0, seller_code } = req.body;
+    const { items, payer, shipping_cost = 0, seller_code, endereco } = req.body;
     if (!items || !items.length) return res.status(400).json({ ok: false, erro: "Carrinho vazio" });
 
     const mpItems = items.map(item => ({
@@ -180,6 +180,7 @@ app.post("/checkout/mp", async (req, res) => {
         cliente_telefone: payer?.phone || null, items: JSON.stringify(items),
         subtotal: total - shipping_cost, frete: shipping_cost, total,
         status: "pending", mp_preference_id: data.id, seller_code: seller_code || null,
+        endereco: endereco ? JSON.stringify(endereco) : null,
       });
       console.log(`[DB] Pedido ${orderId} salvo`);
     } catch (dbErr) {
@@ -226,6 +227,7 @@ async function enviarEmailPedido(pedido, payment) {
           <p style="color:#666;font-size:14px"><strong>Nome:</strong> ${pedidoDB.cliente_nome || "—"}</p>
           <p style="color:#666;font-size:14px"><strong>Email:</strong> ${pedidoDB.cliente_email || "—"}</p>
           <p style="color:#666;font-size:14px"><strong>Telefone:</strong> ${pedidoDB.cliente_telefone || "—"}</p>
+          ${(() => { try { const e = typeof pedidoDB.endereco === "string" ? JSON.parse(pedidoDB.endereco) : pedidoDB.endereco; return e ? `<p style="color:#666;font-size:14px"><strong>Endereço:</strong> ${e.rua || ""}, ${e.numero || ""} — ${e.bairro || ""}, ${e.cidade || ""} · CEP ${e.cep || ""}</p>` : ""; } catch { return ""; } })()}
           
           <h3 style="color:#333;font-size:14px;margin-top:20px;border-bottom:2px solid #ef4444;padding-bottom:5px">📦 Produtos</h3>
           <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -418,6 +420,7 @@ function render(filter){
       <div class="info">\${o.cliente_telefone||''} · \${date}</div>
       \${o.payment_method?'<div class="info">Pagamento: '+o.payment_method+'</div>':''}
       \${o.seller_code==='RETIRADA_LOJA'?'<div class="info" style="color:#166534">🏪 Retirada na loja</div>':''}
+      \${(()=>{try{const e=typeof o.endereco==='string'?JSON.parse(o.endereco):o.endereco;return e?'<div class="info">📍 '+[e.rua,e.numero,e.bairro,e.cidade,'CEP '+e.cep].filter(Boolean).join(', ')+'</div>':'';}catch{return '';}})()}
       <div class="items">\${items}</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
         <span style="font-size:11px;color:#999">Frete: R$ \${Number(o.frete||0).toFixed(2)}</span>
