@@ -166,7 +166,6 @@ app.post("/checkout/mp", async (req, res) => {
     };
 
     console.log(`[MP] Criando: ${orderId}`);
-    console.log("🕵️ Espião do Token:", MP_ACCESS_TOKEN ? `Tamanho: ${MP_ACCESS_TOKEN.length} | Início: ${MP_ACCESS_TOKEN.substring(0, 10)}...` : "⚠️ VAZIO OU INDEFINIDO");
     const { data } = await axios.post(`${MP_API}/checkout/preferences`, preference, {
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MP_ACCESS_TOKEN}` },
     });
@@ -262,6 +261,30 @@ app.get("/pedidos", async (req, res) => {
     const rows = await sb.select("pedidos", query);
     const pedidos = (rows || []).map(p => { if (typeof p.items === "string") p.items = JSON.parse(p.items); return p; });
     res.json({ ok: true, pedidos, total: pedidos.length });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── AVALIAÇÕES ───────────────────────────────────────────────────────────────
+app.post("/avaliacoes", async (req, res) => {
+  try {
+    const { produto_id, produto_nome, cliente_email, cliente_nome, stars, texto } = req.body;
+    if (!produto_id || !cliente_email || !stars || !texto) return res.status(400).json({ ok: false, erro: "Campos obrigatórios faltando" });
+    const row = await sb.insert("avaliacoes", { produto_id: String(produto_id), produto_nome, cliente_email, cliente_nome, stars: Number(stars), texto });
+    res.json({ ok: true, avaliacao: row?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/avaliacoes/produto/:id", async (req, res) => {
+  try {
+    const rows = await sb.select("avaliacoes", `produto_id=eq.${req.params.id}&order=created_at.desc&limit=50`);
+    res.json({ ok: true, avaliacoes: rows || [], total: (rows || []).length });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/avaliacoes/cliente/:email", async (req, res) => {
+  try {
+    const rows = await sb.select("avaliacoes", `cliente_email=eq.${encodeURIComponent(req.params.email)}&order=created_at.desc&limit=50`);
+    res.json({ ok: true, avaliacoes: rows || [], total: (rows || []).length });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
