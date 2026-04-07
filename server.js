@@ -732,18 +732,18 @@ app.get("/cupons/validar/:codigo", async (req, res) => {
     // Verificar validade
     if (c.validade && new Date(c.validade) < new Date()) return res.json({ ok: false, erro: "Cupom expirado" });
     // Verificar uso máximo
-    if (c.max_usos > 0 && c.usos_atual >= c.max_usos) return res.json({ ok: false, erro: "Cupom esgotado" });
+    if (c.uso_maximo > 0 && c.uso_atual >= c.uso_maximo) return res.json({ ok: false, erro: "Cupom esgotado" });
     res.json({ ok: true, cupom: { codigo: c.codigo, tipo: c.tipo, valor: Number(c.valor), descricao: c.descricao, primeira_compra: c.primeira_compra } });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
 app.post("/cupons", async (req, res) => {
   try {
-    const { codigo, tipo, valor, descricao, min_compra, max_usos, primeira_compra, validade } = req.body;
+    const { codigo, tipo, valor, descricao, valor_minimo, uso_maximo, min_compra, max_usos, primeira_compra, validade } = req.body;
     if (!codigo || !tipo) return res.status(400).json({ ok: false, erro: "Código e tipo obrigatórios" });
     const row = await sb.insert("cupons", {
       codigo: codigo.toUpperCase(), tipo, valor: Number(valor) || 0, descricao: descricao || "",
-      min_compra: Number(min_compra) || 0, max_usos: Number(max_usos) || 0,
+      valor_minimo: Number(valor_minimo || min_compra) || 0, uso_maximo: Number(uso_maximo || max_usos) || 0,
       primeira_compra: !!primeira_compra, validade: validade || null,
     });
     res.json({ ok: true, cupom: row?.[0] || null });
@@ -753,14 +753,17 @@ app.post("/cupons", async (req, res) => {
 app.put("/cupons/:id", async (req, res) => {
   try {
     const updates = {};
-    const allowed = ["codigo", "tipo", "valor", "descricao", "min_compra", "max_usos", "primeira_compra", "validade", "ativo"];
+    const allowed = ["codigo", "tipo", "valor", "descricao", "valor_minimo", "uso_maximo", "primeira_compra", "validade", "ativo"];
     for (const k of allowed) {
       if (req.body[k] !== undefined) {
         if (k === "codigo") updates[k] = req.body[k].toUpperCase();
-        else if (["valor", "min_compra", "max_usos"].includes(k)) updates[k] = Number(req.body[k]);
+        else if (["valor", "valor_minimo", "uso_maximo"].includes(k)) updates[k] = Number(req.body[k]);
         else updates[k] = req.body[k];
       }
     }
+    // Mapear nomes alternativos do painel
+    if (req.body.min_compra !== undefined) updates.valor_minimo = Number(req.body.min_compra);
+    if (req.body.max_usos !== undefined) updates.uso_maximo = Number(req.body.max_usos);
     await sb.update("cupons", { id: req.params.id }, updates);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
@@ -778,7 +781,7 @@ app.post("/cupons/usar/:codigo", async (req, res) => {
   try {
     const rows = await sb.select("cupons", `codigo=eq.${req.params.codigo.toUpperCase()}`);
     if (rows?.length) {
-      await sb.update("cupons", { id: rows[0].id }, { usos_atual: (rows[0].usos_atual || 0) + 1 });
+      await sb.update("cupons", { id: rows[0].id }, { uso_atual: (rows[0].uso_atual || 0) + 1 });
     }
     res.json({ ok: true });
   } catch (e) { res.json({ ok: true }); }
@@ -819,7 +822,7 @@ app.post("/banners", async (req, res) => {
       }
     }
 
-    const row = await sb.insert("banners", { titulo, subtitulo: subtitulo || "", imagem_url, acao: acao || null, ordem: Number(ordem) || 0 });
+    const row = await sb.insert("banners", { titulo, subtitulo: subtitulo || "", imagem_url, link_acao: acao || null, cor_fundo: req.body.cor_fundo || "#b91c1c", ordem: Number(ordem) || 0 });
     res.json({ ok: true, banner: row?.[0] || null });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
@@ -827,8 +830,10 @@ app.post("/banners", async (req, res) => {
 app.put("/banners/:id", async (req, res) => {
   try {
     const updates = {};
-    const allowed = ["titulo", "subtitulo", "acao", "ordem", "ativo"];
+    const allowed = ["titulo", "subtitulo", "link_acao", "cor_fundo", "ordem", "ativo"];
     for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+    // Mapear 'acao' do painel pra 'link_acao'
+    if (req.body.acao !== undefined) updates.link_acao = req.body.acao;
 
     // Upload nova imagem se enviada
     if (req.body.imagem_base64) {
