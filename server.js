@@ -51,6 +51,11 @@ const sb = {
     });
     return res;
   },
+  async delete(table, match) {
+    const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
+    const { data: res } = await axios.delete(`${SUPABASE_URL}/rest/v1/${table}?${params}`, { headers: sbHeaders });
+    return res;
+  },
 };
 
 // ─── CACHE XML ────────────────────────────────────────────────────────────────
@@ -414,7 +419,13 @@ app.post("/webhook/mp", async (req, res) => {
 // ─── RETORNO ──────────────────────────────────────────────────────────────────
 app.get("/checkout/retorno", (req, res) => {
   const { status, order } = req.query;
-  const appUrl = process.env.APP_URL || "https://artmoveis-app.vercel.app";
+  const allowed = [
+    process.env.APP_URL,
+    "https://artmoveis-app.vercel.app",
+    "https://app.lojasartmoveis.com.br"
+  ].filter(Boolean);
+  const referer = req.get("referer") || "";
+  const appUrl = allowed.find(u => referer.startsWith(u)) || allowed[0] || "https://artmoveis-app.vercel.app";
   res.redirect(`${appUrl}?payment_status=${status}&order=${order}`);
 });
 
@@ -472,73 +483,192 @@ app.get("/avaliacoes/cliente/:email", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
+// ─── VENDEDORES ──────────────────────────────────────────────────────────────
+app.get("/vendedores", async (_, res) => {
+  try {
+    const rows = await sb.select("vendedores", "order=created_at.desc");
+    res.json({ ok: true, vendedores: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/vendedores/codigo/:code", async (req, res) => {
+  try {
+    const rows = await sb.select("vendedores", `codigo=eq.${req.params.code}&ativo=eq.true`);
+    if (!rows?.length) return res.json({ ok: false, erro: "Código não encontrado" });
+    const v = rows[0];
+    res.json({ ok: true, vendedor: { nome: v.nome, loja: v.loja, codigo: v.codigo, comissao: v.comissao } });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.post("/vendedores", async (req, res) => {
+  try {
+    const { nome, cpf, loja, codigo, comissao } = req.body;
+    if (!nome || !cpf || !loja || !codigo) return res.status(400).json({ ok: false, erro: "Campos obrigatórios: nome, cpf, loja, codigo" });
+    const row = await sb.insert("vendedores", { nome, cpf, loja, codigo: codigo.toUpperCase(), comissao: Number(comissao) || 0 });
+    res.json({ ok: true, vendedor: row?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.put("/vendedores/:id", async (req, res) => {
+  try {
+    const { nome, cpf, loja, codigo, comissao, ativo } = req.body;
+    const updates = {};
+    if (nome !== undefined) updates.nome = nome;
+    if (cpf !== undefined) updates.cpf = cpf;
+    if (loja !== undefined) updates.loja = loja;
+    if (codigo !== undefined) updates.codigo = codigo.toUpperCase();
+    if (comissao !== undefined) updates.comissao = Number(comissao);
+    if (ativo !== undefined) updates.ativo = ativo;
+    await sb.update("vendedores", { id: req.params.id }, updates);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.delete("/vendedores/:id", async (req, res) => {
+  try {
+    await sb.delete("vendedores", { id: req.params.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── NOTIFICAÇÕES ────────────────────────────────────────────────────────────
+app.get("/notificacoes/:email", async (req, res) => {
+  try {
+    const rows = await sb.select("notificacoes", `cliente_email=eq.${encodeURIComponent(req.params.email)}&order=created_at.desc&limit=50`);
+    res.json({ ok: true, notificacoes: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.post("/notificacoes", async (req, res) => {
+  try {
+    const { cliente_email, tipo, titulo, mensagem, pedido_id } = req.body;
+    if (!cliente_email || !titulo || !mensagem) return res.status(400).json({ ok: false, erro: "Campos obrigatórios faltando" });
+    const row = await sb.insert("notificacoes", { cliente_email, tipo: tipo || "sistema", titulo, mensagem, pedido_id: pedido_id || null });
+    res.json({ ok: true, notificacao: row?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.put("/notificacoes/:id/lida", async (req, res) => {
+  try {
+    await sb.update("notificacoes", { id: req.params.id }, { lida: true });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── ADMIN — PEDIDOS AVANÇADO ────────────────────────────────────────────────
+app.put("/pedidos/:id", async (req, res) => {
+  try {
+    const updates = {};
+    const allowed = ["status", "cliente_nome", "cliente_email", "cliente_telefone", "endereco", "shipped_at", "delivered_at"];
+    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+    updates.updated_at = new Date().toISOString();
+    await sb.update("pedidos", { id: req.params.id }, updates);
+
+    // Se mudou status, criar notificação pro cliente
+    if (req.body.status) {
+      const rows = await sb.select("pedidos", `id=eq.${req.params.id}`);
+      const pedido = rows?.[0];
+      if (pedido?.cliente_email) {
+        const statusLabels = { approved: "Pagamento aprovado", shipped: "Pedido enviado", delivered: "Pedido entregue", rejected: "Pagamento recusado", cancelled: "Pedido cancelado" };
+        const label = statusLabels[req.body.status] || req.body.status;
+        await sb.insert("notificacoes", {
+          cliente_email: pedido.cliente_email,
+          tipo: "pedido",
+          titulo: label,
+          mensagem: `Seu pedido ${req.params.id} foi atualizado para: ${label}`,
+          pedido_id: req.params.id,
+        });
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.post("/pedidos", async (req, res) => {
+  try {
+    const { cliente_nome, cliente_email, cliente_telefone, items, subtotal, frete, desconto, total, seller_code, endereco, status } = req.body;
+    if (!cliente_nome || !items?.length) return res.status(400).json({ ok: false, erro: "Nome e itens obrigatórios" });
+    const orderId = `ART-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+    const row = await sb.insert("pedidos", {
+      id: orderId, cliente_nome, cliente_email: cliente_email || null, cliente_telefone: cliente_telefone || null,
+      items: JSON.stringify(items), subtotal: Number(subtotal) || 0, frete: Number(frete) || 0,
+      desconto: Number(desconto) || 0, total: Number(total) || 0,
+      status: status || "approved", seller_code: seller_code || null,
+      endereco: endereco ? JSON.stringify(endereco) : null,
+    });
+    // Notificar
+    if (cliente_email) {
+      await sb.insert("notificacoes", {
+        cliente_email, tipo: "pedido", titulo: "Novo pedido criado",
+        mensagem: `Pedido ${orderId} criado com sucesso. Total: R$ ${Number(total || 0).toFixed(2)}`,
+        pedido_id: orderId,
+      });
+    }
+    res.json({ ok: true, pedido_id: orderId });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.delete("/pedidos/:id", async (req, res) => {
+  try {
+    // Cancelar em vez de deletar
+    await sb.update("pedidos", { id: req.params.id }, { status: "cancelled", updated_at: new Date().toISOString() });
+    const rows = await sb.select("pedidos", `id=eq.${req.params.id}`);
+    const pedido = rows?.[0];
+    if (pedido?.cliente_email) {
+      await sb.insert("notificacoes", {
+        cliente_email: pedido.cliente_email, tipo: "pedido",
+        titulo: "Pedido cancelado", mensagem: `Seu pedido ${req.params.id} foi cancelado.`,
+        pedido_id: req.params.id,
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── ADMIN — REENVIAR EMAIL ──────────────────────────────────────────────────
+app.post("/pedidos/:id/reenviar-email", async (req, res) => {
+  try {
+    const rows = await sb.select("pedidos", `id=eq.${req.params.id}`);
+    if (!rows?.length) return res.status(404).json({ ok: false, erro: "Pedido não encontrado" });
+    await enviarEmailPedido(rows[0], { status: rows[0].status, payment_method_id: rows[0].payment_method });
+    res.json({ ok: true, msg: "Email reenviado" });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// ─── ADMIN — CLIENTES ────────────────────────────────────────────────────────
+app.get("/clientes", async (_, res) => {
+  try {
+    const rows = await sb.select("clientes", "order=created_at.desc&limit=500");
+    res.json({ ok: true, clientes: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.put("/clientes/:id", async (req, res) => {
+  try {
+    const updates = {};
+    const allowed = ["nome", "email", "telefone", "endereco"];
+    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+    await sb.update("clientes", { id: req.params.id }, updates);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
 // ─── PAINEL ADMIN ─────────────────────────────────────────────────────────────
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 app.get("/painel", (_, res) => {
-  res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Art Móveis — Painel de Pedidos</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#f5f5f5;color:#333}
-.header{background:linear-gradient(135deg,#b91c1c,#ef4444);padding:20px;color:#fff}.header h1{font-size:20px;font-weight:900}.header p{font-size:12px;opacity:.7;margin-top:4px}
-.filters{padding:12px 16px;display:flex;gap:8px;overflow-x:auto;background:#fff;border-bottom:1px solid #eee}
-.filters button{padding:6px 14px;border-radius:20px;border:1px solid #ddd;background:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
-.filters button.active{background:#b91c1c;color:#fff;border-color:#b91c1c}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;padding:16px}
-.stat{background:#fff;border-radius:12px;padding:16px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.stat .num{font-size:24px;font-weight:900;color:#b91c1c}.stat .label{font-size:11px;color:#999;margin-top:4px}
-.orders{padding:0 16px 100px}
-.order{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.order .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.order .id{font-weight:800;font-size:13px}.order .badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
-.badge-approved{background:#dcfce7;color:#166534}.badge-pending{background:#fef9c3;color:#854d0e}.badge-rejected{background:#fee2e2;color:#991b1b}
-.order .info{font-size:12px;color:#666;margin:3px 0}.order .items{font-size:12px;color:#888;margin-top:6px}
-.order .total{font-size:16px;font-weight:900;color:#b91c1c;margin-top:8px}
-.empty{text-align:center;padding:60px 20px;color:#ccc;font-size:14px}
-.loading{text-align:center;padding:60px;color:#999}
-</style></head><body>
-<div class="header"><h1>Painel Art Móveis</h1><p>Gestão de pedidos em tempo real</p></div>
-<div class="filters" id="filters">
-<button class="active" data-s="all">Todos</button><button data-s="approved">Pagos</button><button data-s="pending">Pendentes</button><button data-s="rejected">Recusados</button>
-</div>
-<div class="stats" id="stats"></div>
-<div class="orders" id="orders"><div class="loading">Carregando pedidos...</div></div>
-<script>
-let allOrders=[];const $=id=>document.getElementById(id);
-async function load(){
-  try{const r=await fetch('/pedidos?limit=200');const d=await r.json();allOrders=d.pedidos||[];render('all');}
-  catch(e){$('orders').innerHTML='<div class="empty">Erro ao carregar</div>';}
-}
-function render(filter){
-  const list=filter==='all'?allOrders:allOrders.filter(o=>o.status===filter);
-  const approved=allOrders.filter(o=>o.status==='approved');
-  const totalVendas=approved.reduce((s,o)=>s+Number(o.total||0),0);
-  $('stats').innerHTML=\`
-    <div class="stat"><div class="num">\${allOrders.length}</div><div class="label">Total Pedidos</div></div>
-    <div class="stat"><div class="num">\${approved.length}</div><div class="label">Pagos</div></div>
-    <div class="stat"><div class="num">R$ \${totalVendas.toFixed(2)}</div><div class="label">Faturamento</div></div>
-    <div class="stat"><div class="num">\${allOrders.filter(o=>o.status==='pending').length}</div><div class="label">Pendentes</div></div>
-  \`;
-  document.querySelectorAll('.filters button').forEach(b=>{b.classList.toggle('active',b.dataset.s===filter);b.onclick=()=>render(b.dataset.s);});
-  if(!list.length){$('orders').innerHTML='<div class="empty">Nenhum pedido</div>';return;}
-  $('orders').innerHTML=list.map(o=>{
-    const items=(Array.isArray(o.items)?o.items:[]).map(i=>\`\${i.name} x\${i.qty}\`).join(', ');
-    const badge=o.status==='approved'?'badge-approved':o.status==='pending'?'badge-pending':'badge-rejected';
-    const label=o.status==='approved'?'Pago':o.status==='pending'?'Pendente':o.status==='rejected'?'Recusado':o.status;
-    const date=o.created_at?new Date(o.created_at).toLocaleString('pt-BR'):'';
-    return \`<div class="order">
-      <div class="top"><span class="id">\${o.id}</span><span class="badge \${badge}">\${label}</span></div>
-      <div class="info"><strong>\${o.cliente_nome||'—'}</strong> · \${o.cliente_email||''}</div>
-      <div class="info">\${o.cliente_telefone||''} · \${date}</div>
-      \${o.payment_method?'<div class="info">Pagamento: '+o.payment_method+'</div>':''}
-      \${o.seller_code==='RETIRADA_LOJA'?'<div class="info" style="color:#166534">🏪 Retirada na loja</div>':''}
-      \${(()=>{try{const e=typeof o.endereco==='string'?JSON.parse(o.endereco):o.endereco;return e?'<div class="info">📍 '+[e.rua,e.numero,e.bairro,e.cidade,'CEP '+e.cep].filter(Boolean).join(', ')+'</div>':'';}catch{return '';}})()}
-      <div class="items">\${items}</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <span style="font-size:11px;color:#999">Frete: R$ \${Number(o.frete||0).toFixed(2)}</span>
-        <span class="total">R$ \${Number(o.total||0).toFixed(2)}</span>
-      </div>
-    </div>\`;
-  }).join('');
-}
-load();setInterval(load,30000);
-</script></body></html>`);
+  try {
+    const html = readFileSync(join(__dirname, "painel.html"), "utf-8");
+    res.type("html").send(html);
+  } catch {
+    res.type("html").send("<h1>painel.html não encontrado</h1><p>Coloque o arquivo painel.html na mesma pasta do server.js</p>");
+  }
 });
 
 // ─── HEALTH ───────────────────────────────────────────────────────────────────
