@@ -8,11 +8,17 @@ import cors from "cors";
 import axios from "axios";
 import { XMLParser } from "fast-xml-parser";
 import crypto from "crypto";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
-app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
+app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
 app.options("*", cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const XML_URL  = "https://www.lojasartmoveis.com.br/xml/xml.php?Chave=wav9mYlNWYmx3N0cDO0ITM";
@@ -654,14 +660,63 @@ app.put("/clientes/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
+// ─── FOTO DE PERFIL ──────────────────────────────────────────────────────────
+app.post("/clientes/foto", async (req, res) => {
+  try {
+    const { email, foto_base64 } = req.body;
+    if (!email || !foto_base64) return res.status(400).json({ ok: false, erro: "Email e foto obrigatórios" });
+
+    // Extrair tipo e dados do base64
+    const match = foto_base64.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) return res.status(400).json({ ok: false, erro: "Formato de imagem inválido" });
+    
+    const mimeType = match[1];
+    const base64Data = match[2];
+    const ext = mimeType.split("/")[1] || "jpg";
+    const fileName = `${email.replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now()}.${ext}`;
+    const buffer = Buffer.from(base64Data, "base64");
+
+    // Upload pro Supabase Storage
+    const uploadRes = await axios.post(
+      `${SUPABASE_URL}/storage/v1/object/avatars/${fileName}`,
+      buffer,
+      {
+        headers: {
+          "Content-Type": mimeType,
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "x-upsert": "true",
+        },
+      }
+    );
+
+    // URL pública
+    const foto_url = `${SUPABASE_URL}/storage/v1/object/public/avatars/${fileName}`;
+
+    // Atualizar na tabela clientes
+    try {
+      const existing = await sb.select("clientes", `email=eq.${encodeURIComponent(email)}`);
+      if (existing?.length) {
+        await sb.update("clientes", { email }, { foto_url });
+      }
+    } catch (e) { console.warn("[Foto] Erro ao salvar na tabela:", e.message); }
+
+    res.json({ ok: true, foto_url });
+  } catch (e) {
+    console.error("[Foto] Erro upload:", e.response?.data || e.message);
+    res.status(500).json({ ok: false, erro: e.response?.data?.message || e.message });
+  }
+});
+
+app.get("/clientes/foto/:email", async (req, res) => {
+  try {
+    const rows = await sb.select("clientes", `email=eq.${encodeURIComponent(req.params.email)}&select=foto_url`);
+    const foto_url = rows?.[0]?.foto_url || null;
+    res.json({ ok: true, foto_url });
+  } catch (e) { res.json({ ok: true, foto_url: null }); }
+});
+
 // ─── PAINEL ADMIN ─────────────────────────────────────────────────────────────
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 app.get("/painel", (_, res) => {
   try {
     const html = readFileSync(join(__dirname, "painel.html"), "utf-8");
