@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Art Moveis — Painel Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#f5f5f5;color:#333}
+.header{background:linear-gradient(135deg,#b91c1c,#ef4444);padding:20px;color:#fff}
+.header h1{font-size:20px;font-weight:900}.header p{font-size:12px;opacity:.7;margin-top:4px}
+.tabs{display:flex;background:#fff;border-bottom:2px solid #eee;position:sticky;top:0;z-index:10}
+.tabs button{flex:1;padding:12px 8px;font-size:13px;font-weight:700;border:none;background:none;cursor:pointer;color:#999;border-bottom:3px solid transparent;transition:all .2s}
+.tabs button.active{color:#b91c1c;border-bottom-color:#b91c1c}
+.tab-content{display:none;padding:16px}.tab-content.active{display:block}
+.filters{display:flex;gap:8px;overflow-x:auto;margin-bottom:16px;padding-bottom:4px}
+.filters button{padding:6px 14px;border-radius:20px;border:1px solid #ddd;background:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.filters button.active{background:#b91c1c;color:#fff;border-color:#b91c1c}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:#fff;border-radius:12px;padding:14px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.stat .num{font-size:22px;font-weight:900;color:#b91c1c}.stat .label{font-size:10px;color:#999;margin-top:3px}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;display:inline-block}
+.badge-approved{background:#dcfce7;color:#166534}.badge-pending{background:#fef9c3;color:#854d0e}
+.badge-rejected{background:#fee2e2;color:#991b1b}.badge-cancelled{background:#f3f4f6;color:#6b7280}
+.badge-shipped{background:#dbeafe;color:#1e40af}.badge-delivered{background:#d1fae5;color:#065f46}
+.info{font-size:12px;color:#666;margin:3px 0}
+.total{font-size:16px;font-weight:900;color:#b91c1c}
+.btn{padding:6px 12px;border-radius:8px;border:none;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+.btn:active{transform:scale(.95)}
+.btn-red{background:#b91c1c;color:#fff}.btn-green{background:#16a34a;color:#fff}
+.btn-blue{background:#2563eb;color:#fff}.btn-gray{background:#f3f4f6;color:#666}
+.btn-outline{background:#fff;border:1px solid #ddd;color:#666}
+.actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:flex-end;justify-content:center}
+.modal{background:#fff;width:100%;max-width:500px;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:24px}
+.modal h3{font-size:16px;font-weight:900;margin-bottom:16px}
+.modal label{display:block;font-size:11px;font-weight:700;color:#999;margin-bottom:4px;margin-top:12px;text-transform:uppercase}
+.modal input,.modal select,.modal textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:13px;outline:none}
+.modal input:focus,.modal select:focus{border-color:#b91c1c}
+.empty{text-align:center;padding:60px 20px;color:#ccc;font-size:14px}
+.loading{text-align:center;padding:60px;color:#999}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:12px;font-size:13px;font-weight:600;z-index:200;animation:fadeInUp .3s ease}
+@keyframes fadeInUp{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Painel Admin — Art Moveis</h1>
+  <p>Gestao completa v0.2</p>
+</div>
+
+<div class="tabs">
+  <button class="active" onclick="switchTab('pedidos')">Pedidos</button>
+  <button onclick="switchTab('vendedores')">Vendedores</button>
+  <button onclick="switchTab('clientes')">Clientes</button>
+</div>
+
+<div id="tab-pedidos" class="tab-content active">
+  <div class="stats" id="stats"></div>
+  <div class="filters" id="filters"></div>
+  <div style="margin-bottom:12px"><button class="btn btn-green" onclick="showNewOrderModal()">+ Novo Pedido</button></div>
+  <div id="orders"><div class="loading">Carregando...</div></div>
+</div>
+
+<div id="tab-vendedores" class="tab-content">
+  <div style="margin-bottom:12px"><button class="btn btn-green" onclick="showNewSellerModal()">+ Novo Vendedor</button></div>
+  <div id="sellers"><div class="loading">Carregando...</div></div>
+</div>
+
+<div id="tab-clientes" class="tab-content">
+  <div id="clients"><div class="loading">Carregando...</div></div>
+</div>
+
+<div id="modal-container"></div>
+<div id="toast-container"></div>
+
+<script>
+const API = '';
+let allOrders=[], allSellers=[], allClients=[];
+
+function toast(msg){
+  const d=document.getElementById('toast-container');
+  d.innerHTML=`<div class="toast">${msg}</div>`;
+  setTimeout(()=>d.innerHTML='',3000);
+}
+
+function switchTab(tab){
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+tab).classList.add('active');
+  document.querySelector(`.tabs button[onclick="switchTab('${tab}')"]`).classList.add('active');
+  if(tab==='vendedores') loadSellers();
+  if(tab==='clientes') loadClients();
+}
+
+function closeModal(){document.getElementById('modal-container').innerHTML='';}
+
+// ═══ PEDIDOS ═══════════════════════════════════════════════════════════════
+async function loadOrders(){
+  try{
+    const r=await fetch(API+'/pedidos?limit=500');const d=await r.json();
+    allOrders=d.pedidos||[];renderOrders('all');
+  }catch{document.getElementById('orders').innerHTML='<div class="empty">Erro ao carregar</div>';}
+}
+
+function renderOrders(filter){
+  const list=filter==='all'?allOrders:allOrders.filter(o=>o.status===filter);
+  const approved=allOrders.filter(o=>o.status==='approved');
+  const totalVendas=approved.reduce((s,o)=>s+Number(o.total||0),0);
+  const comVendedor=allOrders.filter(o=>o.seller_code&&o.seller_code!=='RETIRADA_LOJA');
+
+  document.getElementById('stats').innerHTML=`
+    <div class="stat"><div class="num">${allOrders.length}</div><div class="label">Total</div></div>
+    <div class="stat"><div class="num">${approved.length}</div><div class="label">Pagos</div></div>
+    <div class="stat"><div class="num">R$ ${totalVendas.toFixed(2)}</div><div class="label">Faturamento</div></div>
+    <div class="stat"><div class="num">${comVendedor.length}</div><div class="label">Com Vendedor</div></div>
+  `;
+
+  const filters=['all','approved','pending','rejected','shipped','delivered','cancelled'];
+  const labels={all:'Todos',approved:'Pagos',pending:'Pendentes',rejected:'Recusados',shipped:'Enviados',delivered:'Entregues',cancelled:'Cancelados'};
+  document.getElementById('filters').innerHTML=filters.map(f=>
+    `<button class="${filter===f?'active':''}" onclick="renderOrders('${f}')">${labels[f]} (${f==='all'?allOrders.length:allOrders.filter(o=>o.status===f).length})</button>`
+  ).join('');
+
+  if(!list.length){document.getElementById('orders').innerHTML='<div class="empty">Nenhum pedido</div>';return;}
+
+  document.getElementById('orders').innerHTML=list.map(o=>{
+    const items=(Array.isArray(o.items)?o.items:(() => {try{return JSON.parse(o.items)||[];}catch{return [];}})()).map(i=>`${i.name} x${i.qty}`).join(', ');
+    const badge='badge-'+(o.status||'pending');
+    const statusLabels={approved:'Pago',pending:'Pendente',rejected:'Recusado',shipped:'Enviado',delivered:'Entregue',cancelled:'Cancelado'};
+    const label=statusLabels[o.status]||o.status;
+    const date=o.created_at?new Date(o.created_at).toLocaleString('pt-BR'):'';
+    let endereco='';
+    try{const e=typeof o.endereco==='string'?JSON.parse(o.endereco):o.endereco;if(e)endereco=[e.rua,e.numero,e.bairro,e.cidade,'CEP '+e.cep].filter(Boolean).join(', ');}catch{}
+
+    return `<div class="card">
+      <div class="top"><span style="font-weight:800;font-size:13px">${o.id}</span><span class="badge ${badge}">${label}</span></div>
+      <div class="info"><strong>${o.cliente_nome||'—'}</strong> &middot; ${o.cliente_email||''}</div>
+      <div class="info">${o.cliente_telefone||''} &middot; ${date}</div>
+      ${o.payment_method?`<div class="info">Pagamento: ${o.payment_method}</div>`:''}
+      ${o.seller_code?`<div class="info" style="color:${o.seller_code==='RETIRADA_LOJA'?'#166534':'#2563eb'}">
+        ${o.seller_code==='RETIRADA_LOJA'?'Retirada na loja':'Vendedor: '+o.seller_code}</div>`:''}
+      ${endereco?`<div class="info">Endereco: ${endereco}</div>`:''}
+      <div class="info" style="color:#888;font-size:11px">${items}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:11px;color:#999">Frete: R$ ${Number(o.frete||0).toFixed(2)}</span>
+        <span class="total">R$ ${Number(o.total||0).toFixed(2)}</span>
+      </div>
+      <div class="actions">
+        <select onchange="updateOrderStatus('${o.id}',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid #ddd;font-size:11px;font-weight:600">
+          ${['pending','approved','shipped','delivered','rejected','cancelled'].map(s=>
+            `<option value="${s}" ${o.status===s?'selected':''}>${statusLabels[s]}</option>`
+          ).join('')}
+        </select>
+        <button class="btn btn-blue" onclick="reenviarEmail('${o.id}')">Reenviar Email</button>
+        ${o.status!=='cancelled'?`<button class="btn btn-gray" onclick="cancelOrder('${o.id}')">Cancelar</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function updateOrderStatus(id, status){
+  try{
+    await fetch(API+'/pedidos/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+    toast('Status atualizado: '+status);loadOrders();
+  }catch{toast('Erro ao atualizar');}
+}
+
+async function reenviarEmail(id){
+  try{
+    const r=await fetch(API+'/pedidos/'+id+'/reenviar-email',{method:'POST'});
+    const d=await r.json();toast(d.ok?'Email reenviado':'Erro: '+(d.erro||''));
+  }catch{toast('Erro ao reenviar');}
+}
+
+async function cancelOrder(id){
+  if(!confirm('Cancelar pedido '+id+'?'))return;
+  try{
+    await fetch(API+'/pedidos/'+id,{method:'DELETE'});
+    toast('Pedido cancelado');loadOrders();
+  }catch{toast('Erro ao cancelar');}
+}
+
+function showNewOrderModal(){
+  document.getElementById('modal-container').innerHTML=`
+  <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h3>Novo Pedido Manual</h3>
+      <label>Nome do cliente</label><input id="no-nome" placeholder="Nome completo">
+      <label>Email</label><input id="no-email" type="email" placeholder="email@exemplo.com">
+      <label>Telefone</label><input id="no-tel" placeholder="(85) 99999-9999">
+      <label>Produto(s) — nome</label><input id="no-item" placeholder="Nome do produto">
+      <label>Quantidade</label><input id="no-qty" type="number" value="1" min="1">
+      <label>Preco unitario (R$)</label><input id="no-price" type="number" step="0.01" placeholder="0.00">
+      <label>Frete (R$)</label><input id="no-frete" type="number" step="0.01" value="0">
+      <label>Codigo vendedor (opcional)</label><input id="no-seller" placeholder="VEND001">
+      <label>Status</label>
+      <select id="no-status"><option value="approved">Pago</option><option value="pending">Pendente</option></select>
+      <div style="display:flex;gap:8px;margin-top:20px">
+        <button class="btn btn-green" style="flex:1;padding:12px" onclick="createOrder()">Criar Pedido</button>
+        <button class="btn btn-gray" style="padding:12px" onclick="closeModal()">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function createOrder(){
+  const nome=document.getElementById('no-nome').value;
+  const email=document.getElementById('no-email').value;
+  const tel=document.getElementById('no-tel').value;
+  const item=document.getElementById('no-item').value;
+  const qty=Number(document.getElementById('no-qty').value)||1;
+  const price=Number(document.getElementById('no-price').value)||0;
+  const frete=Number(document.getElementById('no-frete').value)||0;
+  const seller=document.getElementById('no-seller').value;
+  const status=document.getElementById('no-status').value;
+  if(!nome||!item||!price)return toast('Preencha nome, produto e preco');
+  const subtotal=price*qty;const total=subtotal+frete;
+  try{
+    const r=await fetch(API+'/pedidos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      cliente_nome:nome,cliente_email:email,cliente_telefone:tel,
+      items:[{name:item,qty,price}],subtotal,frete,desconto:0,total,
+      seller_code:seller||null,status
+    })});
+    const d=await r.json();
+    if(d.ok){toast('Pedido criado: '+d.pedido_id);closeModal();loadOrders();}
+    else toast('Erro: '+(d.erro||''));
+  }catch{toast('Erro ao criar');}
+}
+
+// ═══ VENDEDORES ════════════════════════════════════════════════════════════
+async function loadSellers(){
+  try{
+    const r=await fetch(API+'/vendedores');const d=await r.json();
+    allSellers=d.vendedores||[];renderSellers();
+  }catch{document.getElementById('sellers').innerHTML='<div class="empty">Erro</div>';}
+}
+
+function renderSellers(){
+  if(!allSellers.length){document.getElementById('sellers').innerHTML='<div class="empty">Nenhum vendedor cadastrado</div>';return;}
+  document.getElementById('sellers').innerHTML=allSellers.map(v=>`
+    <div class="card">
+      <div class="top">
+        <span style="font-weight:800">${v.nome}</span>
+        <span class="badge ${v.ativo?'badge-approved':'badge-rejected'}">${v.ativo?'Ativo':'Inativo'}</span>
+      </div>
+      <div class="info">Codigo: <strong style="font-family:monospace;color:#b91c1c">${v.codigo}</strong></div>
+      <div class="info">CPF: ${v.cpf} &middot; Loja: ${v.loja}</div>
+      <div class="info">Comissao: <strong>${Number(v.comissao).toFixed(1)}%</strong></div>
+      <div class="info" style="font-size:10px;color:#bbb">${v.created_at?new Date(v.created_at).toLocaleString('pt-BR'):''}</div>
+      <div class="actions">
+        <button class="btn btn-blue" onclick='editSeller(${JSON.stringify(v).replace(/'/g,"&#39;")})'>Editar</button>
+        <button class="btn btn-gray" onclick="toggleSeller('${v.id}',${!v.ativo})">${v.ativo?'Desativar':'Ativar'}</button>
+        <button class="btn btn-gray" onclick="deleteSeller('${v.id}')">Excluir</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function showNewSellerModal(v){
+  const edit=!!v;
+  document.getElementById('modal-container').innerHTML=`
+  <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h3>${edit?'Editar':'Novo'} Vendedor</h3>
+      <label>Nome completo</label><input id="sv-nome" value="${v?.nome||''}">
+      <label>CPF</label><input id="sv-cpf" value="${v?.cpf||''}" placeholder="000.000.000-00">
+      <label>Loja</label><input id="sv-loja" value="${v?.loja||''}" placeholder="Loja Centro">
+      <label>Codigo</label><input id="sv-codigo" value="${v?.codigo||''}" placeholder="VEND001" style="text-transform:uppercase;font-family:monospace">
+      <label>Comissao (%)</label><input id="sv-comissao" type="number" step="0.1" value="${v?.comissao||0}">
+      <div style="display:flex;gap:8px;margin-top:20px">
+        <button class="btn btn-green" style="flex:1;padding:12px" onclick="${edit?`saveSeller('${v.id}')`:'createSeller()'}">${edit?'Salvar':'Cadastrar'}</button>
+        <button class="btn btn-gray" style="padding:12px" onclick="closeModal()">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function editSeller(v){showNewSellerModal(v);}
+
+async function createSeller(){
+  const body={
+    nome:document.getElementById('sv-nome').value,
+    cpf:document.getElementById('sv-cpf').value,
+    loja:document.getElementById('sv-loja').value,
+    codigo:document.getElementById('sv-codigo').value,
+    comissao:Number(document.getElementById('sv-comissao').value)||0
+  };
+  if(!body.nome||!body.cpf||!body.loja||!body.codigo)return toast('Preencha todos os campos');
+  try{
+    const r=await fetch(API+'/vendedores',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){toast('Vendedor cadastrado');closeModal();loadSellers();}
+    else toast('Erro: '+(d.erro||''));
+  }catch{toast('Erro ao cadastrar');}
+}
+
+async function saveSeller(id){
+  const body={
+    nome:document.getElementById('sv-nome').value,
+    cpf:document.getElementById('sv-cpf').value,
+    loja:document.getElementById('sv-loja').value,
+    codigo:document.getElementById('sv-codigo').value,
+    comissao:Number(document.getElementById('sv-comissao').value)||0
+  };
+  try{
+    await fetch(API+'/vendedores/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    toast('Vendedor atualizado');closeModal();loadSellers();
+  }catch{toast('Erro ao salvar');}
+}
+
+async function toggleSeller(id,ativo){
+  try{
+    await fetch(API+'/vendedores/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ativo})});
+    toast(ativo?'Vendedor ativado':'Vendedor desativado');loadSellers();
+  }catch{toast('Erro');}
+}
+
+async function deleteSeller(id){
+  if(!confirm('Excluir vendedor?'))return;
+  try{
+    await fetch(API+'/vendedores/'+id,{method:'DELETE'});
+    toast('Vendedor excluido');loadSellers();
+  }catch{toast('Erro');}
+}
+
+// ═══ CLIENTES ══════════════════════════════════════════════════════════════
+async function loadClients(){
+  try{
+    const r=await fetch(API+'/clientes');const d=await r.json();
+    allClients=d.clientes||[];renderClients();
+  }catch{document.getElementById('clients').innerHTML='<div class="empty">Erro</div>';}
+}
+
+function renderClients(){
+  if(!allClients.length){document.getElementById('clients').innerHTML='<div class="empty">Nenhum cliente</div>';return;}
+  document.getElementById('clients').innerHTML=allClients.map(c=>`
+    <div class="card">
+      <div style="font-weight:800;font-size:14px;margin-bottom:6px">${c.nome||'—'}</div>
+      <div class="info">${c.email||''}</div>
+      <div class="info">${c.telefone||''}</div>
+      ${c.endereco?`<div class="info">Endereco: ${c.endereco}</div>`:''}
+      <div class="info" style="font-size:10px;color:#bbb">${c.created_at?new Date(c.created_at).toLocaleString('pt-BR'):''}</div>
+      <div class="actions">
+        <button class="btn btn-blue" onclick='editClient(${JSON.stringify(c).replace(/'/g,"&#39;")})'>Editar</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function editClient(c){
+  document.getElementById('modal-container').innerHTML=`
+  <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h3>Editar Cliente</h3>
+      <label>Nome</label><input id="ec-nome" value="${c.nome||''}">
+      <label>Email</label><input id="ec-email" value="${c.email||''}">
+      <label>Telefone</label><input id="ec-tel" value="${c.telefone||''}">
+      <label>Endereco</label><textarea id="ec-end" rows="2">${c.endereco||''}</textarea>
+      <div style="display:flex;gap:8px;margin-top:20px">
+        <button class="btn btn-green" style="flex:1;padding:12px" onclick="saveClient('${c.id}')">Salvar</button>
+        <button class="btn btn-gray" style="padding:12px" onclick="closeModal()">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function saveClient(id){
+  const body={
+    nome:document.getElementById('ec-nome').value,
+    email:document.getElementById('ec-email').value,
+    telefone:document.getElementById('ec-tel').value,
+    endereco:document.getElementById('ec-end').value
+  };
+  try{
+    await fetch(API+'/clientes/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    toast('Cliente atualizado');closeModal();loadClients();
+  }catch{toast('Erro');}
+}
+
+// ═══ INIT ══════════════════════════════════════════════════════════════════
+loadOrders();
+setInterval(loadOrders,30000);
+</script>
+</body>
+</html>
