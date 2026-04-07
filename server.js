@@ -716,6 +716,147 @@ app.get("/clientes/foto/:email", async (req, res) => {
   } catch (e) { res.json({ ok: true, foto_url: null }); }
 });
 
+// ─── CUPONS DINÂMICOS ────────────────────────────────────────────────────────
+app.get("/cupons", async (_, res) => {
+  try {
+    const rows = await sb.select("cupons", "order=created_at.desc");
+    res.json({ ok: true, cupons: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/cupons/validar/:codigo", async (req, res) => {
+  try {
+    const rows = await sb.select("cupons", `codigo=eq.${req.params.codigo.toUpperCase()}&ativo=eq.true`);
+    if (!rows?.length) return res.json({ ok: false, erro: "Cupom inválido" });
+    const c = rows[0];
+    // Verificar validade
+    if (c.validade && new Date(c.validade) < new Date()) return res.json({ ok: false, erro: "Cupom expirado" });
+    // Verificar uso máximo
+    if (c.max_usos > 0 && c.usos_atual >= c.max_usos) return res.json({ ok: false, erro: "Cupom esgotado" });
+    res.json({ ok: true, cupom: { codigo: c.codigo, tipo: c.tipo, valor: Number(c.valor), descricao: c.descricao, primeira_compra: c.primeira_compra } });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.post("/cupons", async (req, res) => {
+  try {
+    const { codigo, tipo, valor, descricao, min_compra, max_usos, primeira_compra, validade } = req.body;
+    if (!codigo || !tipo) return res.status(400).json({ ok: false, erro: "Código e tipo obrigatórios" });
+    const row = await sb.insert("cupons", {
+      codigo: codigo.toUpperCase(), tipo, valor: Number(valor) || 0, descricao: descricao || "",
+      min_compra: Number(min_compra) || 0, max_usos: Number(max_usos) || 0,
+      primeira_compra: !!primeira_compra, validade: validade || null,
+    });
+    res.json({ ok: true, cupom: row?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.put("/cupons/:id", async (req, res) => {
+  try {
+    const updates = {};
+    const allowed = ["codigo", "tipo", "valor", "descricao", "min_compra", "max_usos", "primeira_compra", "validade", "ativo"];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) {
+        if (k === "codigo") updates[k] = req.body[k].toUpperCase();
+        else if (["valor", "min_compra", "max_usos"].includes(k)) updates[k] = Number(req.body[k]);
+        else updates[k] = req.body[k];
+      }
+    }
+    await sb.update("cupons", { id: req.params.id }, updates);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.delete("/cupons/:id", async (req, res) => {
+  try {
+    await sb.delete("cupons", { id: req.params.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+// Incrementar uso do cupom (chamado após checkout aprovado)
+app.post("/cupons/usar/:codigo", async (req, res) => {
+  try {
+    const rows = await sb.select("cupons", `codigo=eq.${req.params.codigo.toUpperCase()}`);
+    if (rows?.length) {
+      await sb.update("cupons", { id: rows[0].id }, { usos_atual: (rows[0].usos_atual || 0) + 1 });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: true }); }
+});
+
+// ─── BANNERS DINÂMICOS ──────────────────────────────────────────────────────
+app.get("/banners", async (_, res) => {
+  try {
+    const rows = await sb.select("banners", "ativo=eq.true&order=ordem.asc");
+    res.json({ ok: true, banners: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.get("/banners/todos", async (_, res) => {
+  try {
+    const rows = await sb.select("banners", "order=ordem.asc");
+    res.json({ ok: true, banners: rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.post("/banners", async (req, res) => {
+  try {
+    const { titulo, subtitulo, imagem_base64, acao, ordem } = req.body;
+    if (!titulo) return res.status(400).json({ ok: false, erro: "Título obrigatório" });
+
+    let imagem_url = null;
+    if (imagem_base64) {
+      const match = imagem_base64.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        const ext = mimeType.split("/")[1] || "jpg";
+        const fileName = `banner_${Date.now()}.${ext}`;
+        const buffer = Buffer.from(match[2], "base64");
+        await axios.post(`${SUPABASE_URL}/storage/v1/object/banners/${fileName}`, buffer, {
+          headers: { "Content-Type": mimeType, "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "x-upsert": "true" },
+        });
+        imagem_url = `${SUPABASE_URL}/storage/v1/object/public/banners/${fileName}`;
+      }
+    }
+
+    const row = await sb.insert("banners", { titulo, subtitulo: subtitulo || "", imagem_url, acao: acao || null, ordem: Number(ordem) || 0 });
+    res.json({ ok: true, banner: row?.[0] || null });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.put("/banners/:id", async (req, res) => {
+  try {
+    const updates = {};
+    const allowed = ["titulo", "subtitulo", "acao", "ordem", "ativo"];
+    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+
+    // Upload nova imagem se enviada
+    if (req.body.imagem_base64) {
+      const match = req.body.imagem_base64.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        const ext = mimeType.split("/")[1] || "jpg";
+        const fileName = `banner_${Date.now()}.${ext}`;
+        const buffer = Buffer.from(match[2], "base64");
+        await axios.post(`${SUPABASE_URL}/storage/v1/object/banners/${fileName}`, buffer, {
+          headers: { "Content-Type": mimeType, "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "x-upsert": "true" },
+        });
+        updates.imagem_url = `${SUPABASE_URL}/storage/v1/object/public/banners/${fileName}`;
+      }
+    }
+
+    await sb.update("banners", { id: req.params.id }, updates);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
+app.delete("/banners/:id", async (req, res) => {
+  try {
+    await sb.delete("banners", { id: req.params.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+
 // ─── PAINEL ADMIN ─────────────────────────────────────────────────────────────
 app.get("/painel", (_, res) => {
   try {
